@@ -1,0 +1,381 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<FrameLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:maplibre="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <!-- MAPA -->
+    <org.maplibre.android.maps.MapView
+        android:id="@+id/mapView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        maplibre:maplibre_uiLogo="false"
+        maplibre:maplibre_uiAttribution="false" />
+
+    <!-- VYHĽADÁVANIE -->
+    <EditText
+        android:id="@+id/searchMap"
+        android:layout_width="match_parent"
+        android:layout_height="52dp"
+        android:layout_gravity="top"
+        android:layout_marginStart="16dp"
+        android:layout_marginTop="16dp"
+        android:layout_marginEnd="16dp"
+        android:background="@android:drawable/editbox_background"
+        android:hint="🔍  Hľadať miesto, mesto..."
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:textSize="16sp"
+        android:singleLine="true"
+        android:imeOptions="actionSearch"
+        android:inputType="text"
+        android:elevation="6dp" />
+
+    <!-- PRAVÉ TLAČIDLÁ -->
+
+    <!-- KOMPAS -->
+    <Button
+        android:id="@+id/compassButton"
+        android:layout_width="58dp"
+        android:layout_height="58dp"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="84dp"
+        android:layout_marginEnd="16dp"
+        android:text="🧭"
+        android:textSize="26sp"
+        android:contentDescription="Kompas"
+        android:elevation="6dp" />
+
+    <!-- MOJA POLOHA -->
+    <Button
+        android:id="@+id/locationButton"
+        android:layout_width="58dp"
+        android:layout_height="58dp"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="150dp"
+        android:layout_marginEnd="16dp"
+        android:text="📍"
+        android:textSize="24sp"
+        android:contentDescription="Moja poloha"
+        android:elevation="6dp" />
+
+    <!-- OFFLINE MAPY -->
+    <Button
+        android:id="@+id/offlineMapsButton"
+        android:layout_width="58dp"
+        android:layout_height="58dp"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="216dp"
+        android:layout_marginEnd="16dp"
+        android:text="⬇️"
+        android:textSize="24sp"
+        android:contentDescription="Offline mapy"
+        android:elevation="6dp" />
+
+    <!-- NASTAVENIA -->
+    <Button
+        android:id="@+id/settingsButton"
+        android:layout_width="58dp"
+        android:layout_height="58dp"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="282dp"
+        android:layout_marginEnd="16dp"
+        android:text="⚙️"
+        android:textSize="24sp"
+        android:contentDescription="Nastavenia"
+        android:elevation="6dp" />
+
+    <!-- REŽIMY MAPY -->
+    <Button
+        android:id="@+id/mapModesButton"
+        android:layout_width="58dp"
+        android:layout_height="58dp"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="348dp"
+        android:layout_marginEnd="16dp"
+        android:text="🗺️"
+        android:textSize="24sp"
+        android:contentDescription="Režimy mapy"
+        android:elevation="6dp" />
+
+    <!-- ====================================== -->
+    <!-- PANEL VYBRANÉHO CIEĽA – V2 -->
+    <!-- ====================================== -->
+
+    <LinearLayout
+        android:id="@+id/targetPanel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:layout_marginStart="10dp"
+        android:layout_marginEnd="10dp"
+        android:layout_marginBottom="10dp"
+        android:orientation="vertical"
+        android:padding="18dp"
+        android:background="#FFFFFF"
+        android:elevation="16dp">
+
+        <!-- NADPIS -->
+        <TextView
+            android:id="@+id/targetTitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="📍  Vybrané miesto"
+            android:textSize="21sp"
+            android:textStyle="bold"
+            android:textColor="#263238"
+            android:paddingBottom="8dp" />
+
+        <!-- SÚRADNICE -->
+        <TextView
+            android:id="@+id/targetCoordinates"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="🌐 Súradnice"
+            android:textSize="15sp"
+            android:textColor="#455A64"
+            android:paddingBottom="4dp" />
+
+        <!-- VZDIALENOSŤ -->
+        <TextView
+            android:id="@+id/targetDistance"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="📏 Vzdialenosť"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="#263238"
+            android:paddingBottom="12dp" />
+
+        <!-- TYP TRASY -->
+        <LinearLayout
+            android:id="@+id/routeOptionsPanel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:paddingBottom="10dp">
+
+            <Button
+                android:id="@+id/walkRouteButton"
+                android:layout_width="0dp"
+                android:layout_height="46dp"
+                android:layout_weight="1"
+                android:text="🚶 Pešo"
+                android:textSize="14sp" />
+
+            <Space
+                android:layout_width="5dp"
+                android:layout_height="1dp" />
+
+            <Button
+                android:id="@+id/bikeRouteButton"
+                android:layout_width="0dp"
+                android:layout_height="46dp"
+                android:layout_weight="1"
+                android:text="🚲 Bicykel"
+                android:textSize="14sp" />
+
+            <Space
+                android:layout_width="5dp"
+                android:layout_height="1dp" />
+
+            <Button
+                android:id="@+id/carRouteButton"
+                android:layout_width="0dp"
+                android:layout_height="46dp"
+                android:layout_weight="1"
+                android:text="🚗 Auto"
+                android:textSize="14sp" />
+
+        </LinearLayout>
+
+        <!-- PRIDAŤ BOD TRASY -->
+        <Button
+            android:id="@+id/addRoutePointButton"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:text="➕ Pridať bod do trasy"
+            android:textSize="15sp" />
+
+        <Space
+            android:layout_width="1dp"
+            android:layout_height="6dp" />
+
+        <!-- HLAVNÉ TLAČIDLÁ -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/navigateButton"
+                android:layout_width="0dp"
+                android:layout_height="54dp"
+                android:layout_weight="1"
+                android:text="🧭 Navigovať sem"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <Space
+                android:layout_width="8dp"
+                android:layout_height="1dp" />
+
+            <Button
+                android:id="@+id/cancelTargetButton"
+                android:layout_width="0dp"
+                android:layout_height="54dp"
+                android:layout_weight="0.45"
+                android:text="✕"
+                android:textSize="18sp" />
+
+        </LinearLayout>
+
+    </LinearLayout>
+
+    <!-- ====================================== -->
+    <!-- PANEL ÚPRAVY TRASY -->
+    <!-- ====================================== -->
+
+    <LinearLayout
+        android:id="@+id/routeEditPanel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:layout_marginStart="10dp"
+        android:layout_marginEnd="10dp"
+        android:layout_marginBottom="10dp"
+        android:orientation="vertical"
+        android:padding="16dp"
+        android:background="#FFFFFF"
+        android:elevation="18dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/routeEditTitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="🛣️ Úprava trasy"
+            android:textSize="20sp"
+            android:textStyle="bold"
+            android:textColor="#263238"
+            android:paddingBottom="6dp" />
+
+        <TextView
+            android:id="@+id/routeEditInfo"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Ťukni na mapu a pridaj miesto, cez ktoré má trasa viesť."
+            android:textSize="15sp"
+            android:textColor="#455A64"
+            android:paddingBottom="10dp" />
+
+        <Button
+            android:id="@+id/finishRouteEditButton"
+            android:layout_width="match_parent"
+            android:layout_height="50dp"
+            android:text="✓ Použiť upravenú trasu"
+            android:textSize="16sp"
+            android:textStyle="bold" />
+
+        <Space
+            android:layout_width="1dp"
+            android:layout_height="6dp" />
+
+        <Button
+            android:id="@+id/cancelRouteEditButton"
+            android:layout_width="match_parent"
+            android:layout_height="46dp"
+            android:text="✕ Zrušiť úpravu"
+            android:textSize="15sp" />
+
+    </LinearLayout>
+
+    <!-- ====================================== -->
+    <!-- NAVIGAČNÝ PANEL -->
+    <!-- ====================================== -->
+
+    <LinearLayout
+        android:id="@+id/navigationPanel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:layout_marginStart="10dp"
+        android:layout_marginTop="82dp"
+        android:layout_marginEnd="10dp"
+        android:orientation="vertical"
+        android:padding="16dp"
+        android:background="#FFFFFF"
+        android:elevation="18dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/navigationInstruction"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="🧭 Pokračujte rovno"
+            android:textSize="21sp"
+            android:textStyle="bold"
+            android:textColor="#263238"
+            android:paddingBottom="5dp" />
+
+        <TextView
+            android:id="@+id/navigationInstructionDistance"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="📏 Ďalší pokyn"
+            android:textSize="16sp"
+            android:textColor="#455A64"
+            android:paddingBottom="4dp" />
+
+        <TextView
+            android:id="@+id/navigationRemaining"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="🛣️ Zostávajúca trasa"
+            android:textSize="15sp"
+            android:textColor="#455A64"
+            android:paddingBottom="10dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/editNavigationRouteButton"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:text="✏️ Upraviť"
+                android:textSize="15sp" />
+
+            <Space
+                android:layout_width="8dp"
+                android:layout_height="1dp" />
+
+            <Button
+                android:id="@+id/stopNavigationButton"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:text="⛔ Ukončiť"
+                android:textSize="15sp" />
+
+        </LinearLayout>
+
+    </LinearLayout>
+
+    <!-- KOMPAS OVERLAY -->
+    <FrameLayout
+        android:id="@+id/compassOverlay"
+        android:layout_width="320dp"
+        android:layout_height="320dp"
+        android:layout_gravity="center"
+        android:visibility="gone"
+        android:background="@android:color/transparent">
+
+    </FrameLayout>
+
+</FrameLayout>
