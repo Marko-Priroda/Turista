@@ -10,3 +10,18 @@
 /captures
 .externalNativeBuild
 
+
+# Local credentials and generated files
+**/local.properties
+**/build/
+.idea/
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+key.properties
+keystore.properties
+secrets.properties
+*.apk
+*.aab

@@ -43,6 +43,28 @@ cd "$SAVED" >/dev/null
 APP_NAME="Gradle"
 APP_BASE_NAME=`basename "$0"`
 
+# Turista potrebuje pre Android Gradle Plugin 8.12 aspon Java 11.
+# Na pouzivanom Ubuntu prostredi je systemova Java stale verzia 8, preto
+# wrapper automaticky uprednostni projektovu instalaciu JDK 17. Premenna
+# TURISTA_JAVA_HOME umoznuje cestu neskor zmenit bez upravy tohto suboru.
+if [ -n "$TURISTA_JAVA_HOME" ] && [ -x "$TURISTA_JAVA_HOME/bin/java" ]; then
+    JAVA_HOME="$TURISTA_JAVA_HOME"
+elif [ -x "$HOME/.jdks/jdk-17/bin/java" ]; then
+    JAVA_HOME="$HOME/.jdks/jdk-17"
+elif [ -x "$HOME/.jdks/jdk-21/bin/java" ]; then
+    JAVA_HOME="$HOME/.jdks/jdk-21"
+elif [ -x "/usr/lib/jvm/java-17-openjdk-amd64/bin/java" ]; then
+    JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64"
+elif [ -x "/usr/lib/jvm/java-21-openjdk-amd64/bin/java" ]; then
+    JAVA_HOME="/usr/lib/jvm/java-21-openjdk-amd64"
+fi
+
+if [ -n "$JAVA_HOME" ]; then
+    export JAVA_HOME
+    PATH="$JAVA_HOME/bin:$PATH"
+    export PATH
+fi
+
 # Add default JVM options here. You can also use JAVA_OPTS and GRADLE_OPTS to pass JVM options to this script.
 DEFAULT_JVM_OPTS='"-Xmx64m" "-Xms64m"'
 

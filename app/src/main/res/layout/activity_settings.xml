@@ -1,0 +1,61 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/settingsRoot" android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="vertical" android:background="@color/turista_sand">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="64dp"
+        android:gravity="center_vertical" android:paddingStart="8dp" android:paddingEnd="20dp">
+        <androidx.appcompat.widget.AppCompatImageButton android:id="@+id/settingsBack"
+            android:layout_width="48dp" android:layout_height="48dp" android:padding="12dp"
+            android:background="@drawable/bg_menu_transparent" android:contentDescription="Späť na mapu"
+            app:srcCompat="@drawable/ic_back" app:tint="@color/turista_forest" app:backgroundTint="@null" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginStart="8dp" android:text="Nastavenia" android:textStyle="bold"
+            android:textSize="24sp" android:textColor="@color/turista_text" />
+    </LinearLayout>
+    <ScrollView android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1"
+        android:fillViewport="true">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical" android:paddingStart="20dp" android:paddingEnd="20dp" android:paddingBottom="28dp">
+            <TextView style="@style/TuristaSettingDescription" android:text="Prispôsob si Turistu. Zmeny sa ukladajú automaticky." />
+            <TextView style="@style/TuristaSettingsSection" android:text="NAVIGÁCIA" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="vertical" android:padding="16dp" android:background="@drawable/bg_panel_card">
+                <androidx.appcompat.widget.SwitchCompat android:id="@+id/voiceSwitch" style="@style/TuristaSettingSwitch"
+                    android:text="Hlasové pokyny" />
+                <TextView style="@style/TuristaSettingDescription" android:text="Čítanie navigačných pokynov nahlas. Bez internetu musí byť slovenský hlas uložený v telefóne." />
+                <Button android:id="@+id/voiceOptionsButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="48dp" android:text="Výber hlasu a ukážka" android:textAllCaps="false" />
+                <androidx.appcompat.widget.SwitchCompat android:id="@+id/followSwitch" style="@style/TuristaSettingSwitch"
+                    android:text="Sledovať moju polohu" />
+                <TextView style="@style/TuristaSettingDescription" android:text="Počas navigácie sa mapa posúva s tebou. Posunutím mapy sledovanie pozastavíš; tlačidlom polohy ho obnovíš." />
+            </LinearLayout>
+            <TextView style="@style/TuristaSettingsSection" android:text="MAPA A OBRAZOVKA" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="vertical" android:padding="16dp" android:background="@drawable/bg_panel_card">
+                <androidx.appcompat.widget.SwitchCompat android:id="@+id/screenSwitch" style="@style/TuristaSettingSwitch"
+                    android:text="Ponechať obrazovku zapnutú" />
+                <TextView style="@style/TuristaSettingDescription" android:text="Pri otvorenej mape sa obrazovka sama nevypne. Zvyšuje spotrebu batérie." />
+                <androidx.appcompat.widget.SwitchCompat android:id="@+id/rotateSwitch" style="@style/TuristaSettingSwitch"
+                    android:text="Otáčať mapu prstami" />
+                <TextView style="@style/TuristaSettingDescription" android:text="Po vypnutí zostane sever hore. Samostatný kompas funguje naďalej." />
+            </LinearLayout>
+            <TextView style="@style/TuristaSettingsSection" android:text="VZDIALENOSTI" />
+            <RadioGroup android:id="@+id/distanceUnits" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="vertical" android:padding="12dp" android:background="@drawable/bg_panel_card">
+                <RadioButton android:id="@+id/unitsMetric" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:minHeight="52dp" android:text="Metre a kilometre" android:textSize="16sp" android:textColor="@color/turista_text" />
+                <RadioButton android:id="@+id/unitsImperial" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:minHeight="52dp" android:text="Stopy a míle" android:textSize="16sp" android:textColor="@color/turista_text" />
+            </RadioGroup>
+            <TextView style="@style/TuristaSettingsSection" android:text="DOPRAVNÁ MAPA" />
+            <Button android:id="@+id/trafficSettings" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:minHeight="52dp" android:text="Nastaviť prístup k TomTom" android:textAllCaps="false" />
+            <TextView style="@style/TuristaSettingDescription" android:text="Živá premávka potrebuje internet a vlastný API kľúč. Farebná vrstva zobrazuje plynulosť dopravy. Trasy sa podľa zápch neprepočítavajú." />
+            <com.google.android.material.button.MaterialButton android:id="@+id/resetSettings"
+                android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="52dp"
+                android:layout_marginTop="24dp" android:text="Obnoviť pôvodné nastavenia" android:textAllCaps="false"
+                android:textColor="@color/turista_forest" app:backgroundTint="@color/turista_surface_green" app:cornerRadius="16dp" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp"
+                android:gravity="center" android:text="Turista 1.12 · Trasy podľa teba" android:textSize="13sp" android:textColor="@color/turista_text_secondary" />
+        </LinearLayout>
+    </ScrollView>
+</LinearLayout>

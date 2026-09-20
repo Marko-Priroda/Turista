@@ -1,6 +1,5 @@
 package com.marko.turista
 
-import android.widget.Toast
 import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
@@ -12,6 +11,7 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import org.maplibre.android.MapLibre
 import org.maplibre.android.geometry.LatLng
@@ -30,6 +30,7 @@ class OfflineMapsActivity : AppCompatActivity() {
     /*
      * MUSÍ byť rovnaký style URL ako v MapActivity.
      *
+     * Dôležité:
      * MapLibre podľa tejto adresy identifikuje štýl,
      * pre ktorý boli uložené offline zdroje.
      */
@@ -53,257 +54,25 @@ class OfflineMapsActivity : AppCompatActivity() {
     }
 
     private fun createInterface() {
-
-        val root = LinearLayout(this)
-
-        root.orientation =
-            LinearLayout.VERTICAL
-
-        root.setBackgroundColor(
-            Color.rgb(221, 232, 213)
-        )
-
-        root.setPadding(
-            24,
-            45,
-            24,
-            24
-        )
-
-        // ---------------------------------------------------------
-        // SPÄŤ
-        // ---------------------------------------------------------
-
-        val backButton =
-            TextView(this)
-
-        backButton.text =
-            "←  Späť"
-
-        backButton.textSize =
-            20f
-
-        backButton.setTextColor(
-            Color.rgb(38, 50, 56)
-        )
-
-        backButton.setPadding(
-            10,
-            15,
-            10,
-            15
-        )
-
-        backButton.isClickable =
-            true
-
-        backButton.setOnClickListener {
-            finish()
-        }
-
-        root.addView(
-            backButton,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-        )
-
-        // ---------------------------------------------------------
-        // NADPIS
-        // ---------------------------------------------------------
-
-        val title =
-            TextView(this)
-
-        title.text =
-            "🌍  OFFLINE MAPY"
-
-        title.textSize =
-            28f
-
-        title.setTextColor(
-            Color.rgb(38, 50, 56)
-        )
-
-        title.gravity =
-            Gravity.CENTER
-
-        title.setPadding(
-            0,
-            10,
-            0,
-            20
-        )
-
-        root.addView(
-            title,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-        )
-
-        // ---------------------------------------------------------
-        // SCROLL
-        // ---------------------------------------------------------
-
-        val scrollView =
-            ScrollView(this)
-
-        val content =
-            LinearLayout(this)
-
-        content.orientation =
-            LinearLayout.VERTICAL
-
-        scrollView.addView(
-            content
-        )
-
-        root.addView(
-            scrollView,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                0,
-                1f
-            )
-        )
-
-        // ---------------------------------------------------------
-        // STIAHNUTÉ MAPY
-        // ---------------------------------------------------------
-
-        addSectionTitle(
-            content,
-            "💾  STIAHNUTÉ MAPY"
-        )
-
-        offlineList =
-            LinearLayout(this)
-
-        offlineList.orientation =
-            LinearLayout.VERTICAL
-
-        content.addView(
-            offlineList,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-        )
-
-        // ---------------------------------------------------------
-        // KRAJINY
-        // ---------------------------------------------------------
-
-        addSectionTitle(
-            content,
-            "🌍  KRAJINY"
-        )
-
-        val search =
-            EditText(this)
-
-        search.hint =
-            "🔍  Hľadať štát..."
-
-        search.textSize =
-            18f
-
-        search.setTextColor(
-            Color.DKGRAY
-        )
-
-        search.setHintTextColor(
-            Color.GRAY
-        )
-
-        search.setBackgroundColor(
-            Color.WHITE
-        )
-
-        search.setPadding(
-            25,
-            15,
-            25,
-            15
-        )
-
-        content.addView(
-            search,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-        )
-
-        countryList =
-            LinearLayout(this)
-
-        countryList.orientation =
-            LinearLayout.VERTICAL
-
-        content.addView(
-            countryList,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-        )
-
-        val selectedCountry =
-            intent.getStringExtra("country")
-
-        if (!selectedCountry.isNullOrBlank()) {
-
-            showSelectedCountryDownload(
-                selectedCountry
-            )
-
-        } else {
-
-            showContinents()
-        }
-
-        search.addTextChangedListener(
-            object : android.text.TextWatcher {
-
-                override fun beforeTextChanged(
-                    s: CharSequence?,
-                    start: Int,
-                    count: Int,
-                    after: Int
-                ) {
-                }
-
-                override fun onTextChanged(
-                    s: CharSequence?,
-                    start: Int,
-                    before: Int,
-                    count: Int
-                ) {
-
-                    searchCountries(
-                        s?.toString() ?: ""
-                    )
-                }
-
-                override fun afterTextChanged(
-                    s: android.text.Editable?
-                ) {
-                }
-            }
-        )
-
-        setContentView(root)
-
-        refreshOfflineRegions()
+        val root=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setBackgroundColor(OfflineUi.cream);setPadding(OfflineUi.dp(this@OfflineMapsActivity,18),0,OfflineUi.dp(this@OfflineMapsActivity,18),0)}
+        root.addView(OfflineUi.back(this){finish()})
+        root.addView(OfflineUi.heading(this,"Offline mapy"))
+        root.addView(TextView(this).apply{text="Priprav sa na cestu bez signálu.";textSize=16f;setTextColor(OfflineUi.ink);setPadding(0,0,0,OfflineUi.dp(this@OfflineMapsActivity,18))})
+        val search=OfflineUi.search(this,"Hľadať krajinu…")
+        root.addView(search,LinearLayout.LayoutParams(-1,-2).apply{bottomMargin=OfflineUi.dp(this@OfflineMapsActivity,16)})
+        root.addView(TextView(this).apply{text="VYBER OBLASŤ";textSize=12f;letterSpacing=0.12f;setTextColor(OfflineUi.ink);setPadding(0,0,0,OfflineUi.dp(this@OfflineMapsActivity,10))})
+        countryList=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(0,0,0,OfflineUi.dp(this@OfflineMapsActivity,24))}
+        root.addView(ScrollView(this).apply{addView(countryList);isFillViewport=true},LinearLayout.LayoutParams(-1,0,1f))
+        offlineList=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL}
+        val selectedCountry=intent.getStringExtra("country")
+        if(selectedCountry.isNullOrBlank())showContinents() else showSelectedCountryDownload(selectedCountry)
+        search.addTextChangedListener(object:android.text.TextWatcher{
+            override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){}
+            override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){searchCountries(s?.toString()?:"")}
+            override fun afterTextChanged(s:android.text.Editable?){}
+        })
+        setContentView(root);ScreenInsets.applyTo(root)
     }
-
-    // ============================================================
-    // SEKCIÁCIA
-    // ============================================================
 
     private fun addSectionTitle(
         parent: LinearLayout,
@@ -370,6 +139,149 @@ class OfflineMapsActivity : AppCompatActivity() {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
+        )
+    }
+
+    // ============================================================
+    // RÝCHLA OFFLINE MAPA
+    // ============================================================
+
+    private fun addQuickMapButton(
+        parent: LinearLayout,
+        titleText: String,
+        descriptionText: String,
+        regionName: String,
+        displayName: String,
+        west: Double,
+        south: Double,
+        east: Double,
+        north: Double,
+        minZoom: Double,
+        maxZoom: Double
+    ) {
+
+        val container =
+            LinearLayout(this)
+
+        container.orientation =
+            LinearLayout.VERTICAL
+
+        container.setBackgroundColor(
+            Color.WHITE
+        )
+
+        container.setPadding(
+            20,
+            15,
+            20,
+            15
+        )
+
+        val title =
+            TextView(this)
+
+        title.text =
+            titleText
+
+        title.textSize =
+            20f
+
+        title.setTextColor(
+            Color.rgb(38, 50, 56)
+        )
+
+        container.addView(
+            title,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        )
+
+        val description =
+            TextView(this)
+
+        description.text =
+            descriptionText
+
+        description.textSize =
+            15f
+
+        description.setTextColor(
+            Color.DKGRAY
+        )
+
+        container.addView(
+            description,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        )
+
+        val button =
+            Button(this)
+
+        button.text =
+            "⬇️  Stiahnuť mapu"
+
+        button.setOnClickListener {
+
+            button.isEnabled =
+                false
+
+            button.text =
+                "⏳  Pripravujem..."
+
+            downloadRegion(
+                regionName = regionName,
+                displayName = displayName,
+                west = west,
+                south = south,
+                east = east,
+                north = north,
+                minZoom = minZoom,
+                maxZoom = maxZoom,
+                onFinished = {
+
+                    runOnUiThread {
+
+                        button.isEnabled =
+                            true
+
+                        button.text =
+                            "⬇️  Stiahnuť mapu"
+
+                        refreshOfflineRegions()
+                    }
+                }
+            )
+        }
+
+        container.addView(
+            button,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        )
+
+        val params =
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+
+        params.setMargins(
+            0,
+            0,
+            0,
+            15
+        )
+
+        parent.addView(
+            container,
+            params
         )
     }
 
@@ -1287,25 +1199,16 @@ class OfflineMapsActivity : AppCompatActivity() {
     // KRAJINY
     // ============================================================
 
-    private fun showSelectedCountryDownload(
-        countryName: String
-    ) {
+    private fun showSelectedCountryDownload(countryName: String) {
 
         countryList.removeAllViews()
 
-        val country =
-            CountryData.countries.firstOrNull {
-
-                it.name.equals(
-                    countryName,
-                    ignoreCase = true
-                )
-            }
+        val country = CountryData.countries.firstOrNull {
+            it.name.equals(countryName, ignoreCase = true)
+        }
 
         if (country == null) {
-
             showContinents()
-
             return
         }
 
@@ -1314,33 +1217,12 @@ class OfflineMapsActivity : AppCompatActivity() {
             "Stiahne sa mapa celého štátu. Zobrazenie bude dostupné bez internetu. Pre skutočné offline routovanie musí byť ku krajine dostupný aj lokálny routovací graf."
         )
 
-        val title =
-            TextView(this)
-
-        title.text =
-            "${country.flag}  ${country.name}"
-
-        title.textSize =
-            22f
-
-        title.setTextColor(
-            Color.rgb(
-                38,
-                50,
-                56
-            )
-        )
-
-        title.setPadding(
-            5,
-            5,
-            5,
-            12
-        )
-
-        countryList.addView(
-            title
-        )
+        val title = TextView(this)
+        title.text = "${country.flag}  ${country.name}"
+        title.textSize = 22f
+        title.setTextColor(Color.rgb(38, 50, 56))
+        title.setPadding(5, 5, 5, 12)
+        countryList.addView(title)
 
         addCountryMapDownloadButton(
             countryList,
@@ -1352,77 +1234,34 @@ class OfflineMapsActivity : AppCompatActivity() {
         parent: LinearLayout,
         countryName: String
     ) {
-
-        val button =
-            Button(this)
-
-        button.text =
-            "⬇️  Stiahnuť celý štát: $countryName"
-
+        val button = Button(this)
+        button.text = "⬇️  Stiahnuť celý štát: $countryName"
         button.setOnClickListener {
-
-            val bounds =
-                CountryBounds.boundsFor(
-                    countryName
-                )
-
-            if (bounds == null) {
-
-                Toast.makeText(
-                    this,
-                    "Pre $countryName zatiaľ nemám pripravené hranice.",
-                    Toast.LENGTH_LONG
-                ).show()
-
-                return@setOnClickListener
+            val country = CountryData.countries.firstOrNull {
+                it.name.equals(countryName, ignoreCase = true)
             }
 
-            button.isEnabled =
-                false
-
-            button.text =
-                "⏳  Sťahujem celý štát..."
-
-            downloadRegion(
-                regionName =
-                    "country_${countryName}",
-                displayName =
-                    countryName,
-                west =
-                    bounds.west,
-                south =
-                    bounds.south,
-                east =
-                    bounds.east,
-                north =
-                    bounds.north,
-                minZoom =
-                    5.0,
-                maxZoom =
-                    15.0,
-                onFinished = {
-
-                    runOnUiThread {
-
-                        button.isEnabled =
-                            true
-
-                        button.text =
-                            "⬇️  Stiahnuť celý štát: $countryName"
-
-                        refreshOfflineRegions()
-                    }
-                }
+            val intent = Intent(
+                this,
+                CountryActivity::class.java
             )
+
+            intent.putExtra("country", countryName)
+            intent.putExtra("flag", country?.flag ?: "🌍")
+            startActivity(intent)
         }
+        parent.addView(button, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+    }
 
-        parent.addView(
-            button,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-        )
+    override fun onResume() {
+        super.onResume()
+
+        if (::offlineList.isInitialized) {
+            refreshOfflineRegions()
+        }
     }
 
     private fun showContinents() {
@@ -1523,153 +1362,16 @@ class OfflineMapsActivity : AppCompatActivity() {
         }
     }
 
-    private fun addCountryResult(
-        country: Country
-    ) {
-
-        val item =
-            TextView(this)
-
-        item.text =
-            "${country.flag}  ${country.name}"
-
-        item.textSize =
-            20f
-
-        item.setTextColor(
-            Color.rgb(
-                38,
-                50,
-                56
-            )
-        )
-
-        item.setBackgroundColor(
-            Color.WHITE
-        )
-
-        item.setPadding(
-            20,
-            25,
-            20,
-            25
-        )
-
-        item.isClickable =
-            true
-
-        item.setOnClickListener {
-
-            val intent =
-                Intent(
-                    this,
-                    CountryListActivity::class.java
-                )
-
-            intent.putExtra(
-                "country",
-                country.name
-            )
-
-            intent.putExtra(
-                "flag",
-                country.flag
-            )
-
-            startActivity(
-                intent
-            )
+    private fun addCountryResult(country:Country) {
+        OfflineUi.row(countryList,country.name,country.continent+" · mapa a navigácia") {
+            startActivity(Intent(this,CountryActivity::class.java).putExtra("country",country.name).putExtra("flag",country.flag))
         }
-
-        val params =
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-
-        params.setMargins(
-            0,
-            0,
-            0,
-            10
-        )
-
-        countryList.addView(
-            item,
-            params
-        )
     }
-
-    private fun addContinent(
-        name: String
-    ) {
-
-        val item =
-            TextView(this)
-
-        item.text =
-            "${getContinentEmoji(name)}  $name    ›"
-
-        item.textSize =
-            20f
-
-        item.setTextColor(
-            Color.rgb(
-                38,
-                50,
-                56
-            )
-        )
-
-        item.setBackgroundColor(
-            Color.WHITE
-        )
-
-        item.setPadding(
-            20,
-            25,
-            20,
-            25
-        )
-
-        item.isClickable =
-            true
-
-        item.setOnClickListener {
-
-            val intent =
-                Intent(
-                    this,
-                    CountryListActivity::class.java
-                )
-
-            intent.putExtra(
-                "continent",
-                name
-            )
-
-            startActivity(
-                intent
-            )
+    private fun addContinent(name:String) {
+        val count=CountryData.countries.count{it.continent==name}
+        OfflineUi.row(countryList,name,"Krajiny a oblasti: $count") {
+            startActivity(Intent(this,CountryListActivity::class.java).putExtra("continent",name))
         }
-
-        val params =
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-
-        params.setMargins(
-            0,
-            0,
-            0,
-            12
-        )
-
-        countryList.addView(
-            item,
-            params
-        )
     }
 
     private fun getContinentEmoji(
