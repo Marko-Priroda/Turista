@@ -4,7 +4,18 @@ import android.Manifest
 import android.animation.ValueAnimator
 import android.app.AlertDialog
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.content.pm.PackageManager
+import android.text.Html
+import android.text.method.LinkMovementMethod
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
+import android.view.Gravity
+import android.view.ViewGroup
+import android.view.WindowManager
+import android.widget.PopupWindow
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
@@ -17,8 +28,11 @@ import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.view.KeyEvent
+import android.view.Surface
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.widget.Button
@@ -35,6 +49,7 @@ import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.geometry.LatLngBounds
 import org.maplibre.android.offline.OfflineManager
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
@@ -56,6 +71,32 @@ class MapActivity :
     AppCompatActivity(),
     SensorEventListener {
 
+    private val rerouteGate=RerouteGate()
+    private var viaOffsets:List<Double> = emptyList()
+    private var nextVia=0
+    private val editUndo=mutableListOf<List<LatLng>>()
+    private fun rememberEdit() {editUndo.add(routeViaPoints.toList());if(editUndo.size>20) editUndo.removeAt(0)}
+    private var placeSearch: PlaceSearch? = null
+    private var savedTrackJson: String? = null
+    private var savedTrackLoad = 0
+    private var selectedPlaceName = ""
+    private var manualRoute = false
+    private var savedManualRoute = false
+    private var drawingRoute = false
+    private var strokeStart = 0
+    private var routeRequest = 0
+    private var progress: RouteProgress? = null
+    private var roadLength = 0.0
+    private var lastGuidanceTime = 0L
+    private var lastSpeech = ""
+    private var lastSpeechAt = 0L
+    private val announced = mutableSetOf<String>()
+    private var roadEndAnnounced = false
+    private var routeLoading = false
+    private var trafficRefresh: Runnable? = null
+    private val trafficHandler = Handler(Looper.getMainLooper())
+    private fun LatLng.navPoint() = RouteProgress.Point(latitude, longitude)
+
     companion object {
 
         const val MAP_STYLE_URL =
@@ -68,37 +109,52 @@ class MapActivity :
 
     private lateinit var mapView: MapView
 
-    private var map: MapLibreMap? =
-        null
+    private var map: MapLibreMap? = null
+    private val settings by lazy { TuristaSettings(this) }
+    private var mapMenu: PopupWindow? = null
+    private var navigationFollowPaused = false
+    private var lastFollowSetting = true
+
+    private lateinit var offlineManager: OfflineManager
+    private var offlineMode = false
+    private var offlineRegionId = -1L
+    private var offlineWest = 0.0
+    private var offlineSouth = 0.0
+    private var offlineEast = 0.0
+    private var offlineNorth = 0.0
+
+    private lateinit var connectivityManager: ConnectivityManager
+    private val connectivityHandler = Handler(Looper.getMainLooper())
+    private var connectivityCallbackRegistered = false
+    private var automaticOfflineActive = false
+    private var automaticOfflineSwitchInProgress = false
+    private var lastKnownOnline: Boolean? = null
+
+    private val connectivityCheckRunnable = Runnable {
+        handleConnectivityChange()
+    }
+
+    private val networkCallback =
+        object : ConnectivityManager.NetworkCallback() {
+
+            override fun onAvailable(network: Network) {
+                scheduleConnectivityCheck()
+            }
+
+            override fun onLost(network: Network) {
+                scheduleConnectivityCheck()
+            }
+
+            override fun onCapabilitiesChanged(
+                network: Network,
+                networkCapabilities: NetworkCapabilities
+            ) {
+                scheduleConnectivityCheck()
+            }
+        }
 
     private var searchMarkerSource: GeoJsonSource? =
         null
-
-    // ====================================
-    // OFFLINE MAPA
-    // ====================================
-
-    private val offlineManager: OfflineManager by lazy {
-        OfflineManager.getInstance(this)
-    }
-
-    private var offlineMode =
-        false
-
-    private var offlineRegionId =
-        -1L
-
-    private var offlineWest =
-        0.0
-
-    private var offlineSouth =
-        0.0
-
-    private var offlineEast =
-        0.0
-
-    private var offlineNorth =
-        0.0
 
     // ====================================
     // VYBRANÝ CIEĽ
@@ -221,6 +277,7 @@ class MapActivity :
         BIKE
     }
 
+    private var selectedNavigationMode = NavigationMode.WALK
     private var navigationMode =
         NavigationMode.WALK
 
@@ -231,7 +288,9 @@ class MapActivity :
         val duration: Double,
         val type: String,
         val modifier: String,
-        val name: String
+        val name: String,
+        val offset: Double = 0.0,
+        val exit: Int = 0
     )
 
     private val navigationSteps =
@@ -253,6 +312,8 @@ class MapActivity :
     private var textToSpeech: TextToSpeech? =
         null
 
+    private var lastVoiceConfiguration = ""
+    private var lastVoiceAvailable = false
     private var textToSpeechReady =
         false
 
@@ -293,6 +354,9 @@ class MapActivity :
 
     private var currentAzimuth =
         0f
+
+    private var filteredAzimuth =
+        Float.NaN
 
     // ====================================
     // GPS OPRÁVNENIE
@@ -345,9 +409,16 @@ class MapActivity :
 
         MapLibre.getInstance(this)
 
+        offlineManager = OfflineManager.getInstance(this)
+
+        connectivityManager =
+            getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+
         setContentView(
             R.layout.activity_map
         )
+
+        ScreenInsets.applyTo(findViewById(R.id.mapRoot))
 
         mapView =
             findViewById(
@@ -381,7 +452,10 @@ class MapActivity :
                             )
                         )
 
-                    textToSpeechReady =
+                    textToSpeech?.setAudioAttributes(android.media.AudioAttributes.Builder()
+                        .setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
+                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH).build())
+                    textToSpeechReady = result != null &&
                         result !=
                         TextToSpeech.LANG_MISSING_DATA &&
                         result !=
@@ -420,7 +494,9 @@ class MapActivity :
 
         navigateButton.setOnClickListener {
 
-            showNavigationModeDialog()
+            navigationMode=selectedNavigationMode
+            if(navigationMode!=NavigationMode.WALK) manualRoute=false
+            startNavigationToSelectedPoint()
         }
 
         cancelTargetButton.setOnClickListener {
@@ -503,6 +579,16 @@ class MapActivity :
                 R.id.cancelRouteEditButton
             )
 
+        val undoRoutePointButton =
+            findViewById<Button>(
+                R.id.undoRoutePointButton
+            )
+
+        val clearRoutePointsButton =
+            findViewById<Button>(
+                R.id.clearRoutePointsButton
+            )
+
         val editNavigationRouteButton =
             findViewById<Button>(
                 R.id.editNavigationRouteButton
@@ -527,6 +613,41 @@ class MapActivity :
 
             cancelRouteEditing()
         }
+
+        findViewById<Button>(R.id.routeModeButton).setOnClickListener {
+            AlertDialog.Builder(this).setTitle("Ako upraviť trasu?")
+                .setItems(arrayOf("Po cestách a chodníkoch", "Vlastná pešia trasa mimo ciest")) { _, which ->
+                    manualRoute = which == 1
+                    drawingRoute = false
+                    updateEditorMode()
+                    updateViaPointSource()
+                }.show()
+        }
+        findViewById<Button>(R.id.drawRouteButton).setOnClickListener {
+            drawingRoute = !drawingRoute
+            updateEditorMode()
+        }
+        findViewById<RouteDrawingView>(R.id.routeDrawing).apply {
+            onStrokeStart = { rememberEdit();strokeStart = routeViaPoints.size }
+            onStrokeCancel = {
+                while (routeViaPoints.size > strokeStart) routeViaPoints.removeAt(routeViaPoints.lastIndex)
+                if(editUndo.isNotEmpty()) editUndo.removeAt(editUndo.lastIndex)
+                updateViaPointSource(); updateRouteEditInfo()
+            }
+            onPoint = { x, y ->
+                map?.projection?.fromScreenLocation(android.graphics.PointF(x,y))?.let { point ->
+                    if (routeViaPoints.size < 2000 && (routeViaPoints.isEmpty() ||
+                        RouteProgress.distance(routeViaPoints.last().navPoint(), point.navPoint()) > 3)) {
+                        routeViaPoints.add(point); updateViaPointSource(); updateRouteEditInfo()
+                    }
+                }
+            }
+        }
+        undoRoutePointButton.setOnClickListener {
+            if(editUndo.isNotEmpty()) {routeViaPoints.clear();routeViaPoints.addAll(editUndo.removeAt(editUndo.lastIndex));updateViaPointSource();updateRouteEditInfo()}
+        }
+        clearRoutePointsButton.setOnClickListener {rememberEdit();routeViaPoints.clear();updateViaPointSource();updateRouteEditInfo()}
+        findViewById<View>(R.id.manageRoutePointsButton).setOnClickListener {showRoutePoints()}
 
         editNavigationRouteButton.setOnClickListener {
 
@@ -574,29 +695,10 @@ class MapActivity :
                 R.id.carRouteButton
             )
 
-        walkRouteButton.setOnClickListener {
-
-            navigationMode =
-                NavigationMode.WALK
-
-            startNavigationToSelectedPoint()
-        }
-
-        bikeRouteButton.setOnClickListener {
-
-            navigationMode =
-                NavigationMode.BIKE
-
-            startNavigationToSelectedPoint()
-        }
-
-        carRouteButton.setOnClickListener {
-
-            navigationMode =
-                NavigationMode.CAR
-
-            startNavigationToSelectedPoint()
-        }
+        walkRouteButton.setOnClickListener {selectedNavigationMode=NavigationMode.WALK;updateModeSelection()}
+        bikeRouteButton.setOnClickListener {selectedNavigationMode=NavigationMode.BIKE;updateModeSelection()}
+        carRouteButton.setOnClickListener {selectedNavigationMode=NavigationMode.CAR;updateModeSelection()}
+        updateModeSelection()
 
         targetPanel.visibility =
             View.GONE
@@ -615,537 +717,683 @@ class MapActivity :
             savedInstanceState
         )
 
-        offlineMode =
-            intent.getBooleanExtra(
-                "offline_mode",
-                false
-            )
-
-        offlineRegionId =
-            intent.getLongExtra(
-                "offline_region_id",
-                -1L
-            )
-
-        offlineWest =
-            intent.getDoubleExtra(
-                "offline_west",
-                0.0
-            )
-
-        offlineSouth =
-            intent.getDoubleExtra(
-                "offline_south",
-                0.0
-            )
-
-        offlineEast =
-            intent.getDoubleExtra(
-                "offline_east",
-                0.0
-            )
-
-        offlineNorth =
-            intent.getDoubleExtra(
-                "offline_north",
-                0.0
-            )
+        offlineMode = intent.getBooleanExtra("offline_mode", false)
+        offlineRegionId = intent.getLongExtra("offline_region_id", -1L)
+        offlineWest = intent.getDoubleExtra("offline_west", 0.0)
+        offlineSouth = intent.getDoubleExtra("offline_south", 0.0)
+        offlineEast = intent.getDoubleExtra("offline_east", 0.0)
+        offlineNorth = intent.getDoubleExtra("offline_north", 0.0)
 
         mapView.getMapAsync { mapInstance ->
 
-            map =
-                mapInstance
+            map = mapInstance
+                mapInstance.addOnMapClickListener { point ->
 
-            val installOffline =
-                offlineMode &&
-                offlineRegionId >= 0L
+                    if (
+                        routeEditMode
+                    ) {
 
-            if (
-                installOffline
-            ) {
+                        addRouteViaPoint(
+                            point
+                        )
 
+                    } else if(navigationActive) {
+                        AlertDialog.Builder(this).setTitle("Vybrané miesto").setItems(arrayOf("Pridať medzibod do aktuálnej trasy","Nastaviť nový cieľ","Zrušiť")) { _, choice ->
+                            if(choice==0) {
+                                if(nextVia>0) {val passed=nextVia.coerceAtMost(routeViaPoints.size);repeat(passed){routeViaPoints.removeAt(0)};viaOffsets=viaOffsets.drop(passed);nextVia=0}
+                                routeViaPoints.add(point);updateViaPointSource();startNavigationToSelectedPoint()
+                            } else if(choice==1) selectDestination(point)
+                        }.show()
+                    } else selectDestination(point)
+                    true
+                }
+
+            mapInstance.uiSettings.setCompassEnabled(false)
+            mapInstance.addOnCameraMoveStartedListener { reason ->
+                if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
+                    navigationFollowPaused = true
+                }
+            }
+
+            // Povoliť detailné priblíženie online aj offline mapy.
+            // Zoom 20 je vhodný aj na chodníky a presný výber bodu trasy.
+            mapInstance.setMinZoomPreference(2.0)
+            mapInstance.setMaxZoomPreference(20.0)
+
+            mapInstance.uiSettings.apply {
+                setZoomGesturesEnabled(true)
+                setDoubleTapGesturesEnabled(true)
+                setQuickZoomGesturesEnabled(true)
+                setScrollGesturesEnabled(true)
+            }
+
+            val installOffline = offlineMode && offlineRegionId >= 0L
+
+            if (installOffline) {
                 offlineManager.getOfflineRegion(
                     offlineRegionId,
-                    object :
-                        OfflineManager.GetOfflineRegionCallback {
-
-                        override fun onRegion(
-                            offlineRegion:
-                                org.maplibre.android.offline.OfflineRegion
-                        ) {
-
+                    object : OfflineManager.GetOfflineRegionCallback {
+                        override fun onRegion(offlineRegion: org.maplibre.android.offline.OfflineRegion) {
                             mapInstance.setOfflineRegionDefinition(
                                 offlineRegion.definition
                             ) {
-
-                                initializeMapLayersAndInteraction(
-                                    mapInstance
-                                )
+                                initializeMapLayersAndInteraction(mapInstance)
                             }
                         }
-override fun onRegionNotFound() {
 
-    mapInstance.setStyle(
-        MAP_STYLE_URL
-    ) {
-
-        initializeMapLayersAndInteraction(
-            mapInstance
-        )
-
-        Toast.makeText(
-            this@MapActivity,
-            "⚠️ Offline mapa sa nenašla.",
-            Toast.LENGTH_LONG
-        ).show()
-    }
-}
-                        override fun onError(
-                            error: String
-                        ) {
-
-                            mapInstance.setStyle(
-                                MAP_STYLE_URL
-                            ) {
-
-                                initializeMapLayersAndInteraction(
-                                    mapInstance
-                                )
-
+                        override fun onRegionNotFound() {
+                            mapInstance.setStyle(MAP_STYLE_URL) {
+                                initializeMapLayersAndInteraction(mapInstance)
                                 Toast.makeText(
                                     this@MapActivity,
-                                    "⚠️ Offline mapa sa nenačítala: $error",
+                                    "⚠️ Offline mapa sa nenašla. Zobrazujem online mapu.",
                                     Toast.LENGTH_LONG
                                 ).show()
                             }
                         }
+
+                        override fun onError(error: String) {
+                            mapInstance.setStyle(MAP_STYLE_URL) {
+                                initializeMapLayersAndInteraction(mapInstance)
+                                Toast.makeText(this@MapActivity, "⚠️ Offline mapa sa nenačítala: $error", Toast.LENGTH_LONG).show()
+                            }
+                        }
                     }
                 )
-
+            } else if (!isInternetAvailable()) {
+                activateAutomaticOfflineMap(mapInstance, true)
             } else {
-
                 mapInstance.setStyle(
                     MAP_STYLE_URL
                 ) {
-
-                    initializeMapLayersAndInteraction(
-                        mapInstance
-                    )
+                    initializeMapLayersAndInteraction(mapInstance)
                 }
+            }
+
+        }
+
+        setupMapControls()
+    }
+
+    private fun isInternetAvailable(): Boolean {
+        val network = connectivityManager.activeNetwork ?: return false
+        val capabilities =
+            connectivityManager.getNetworkCapabilities(network) ?: return false
+
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
+
+    private fun scheduleConnectivityCheck() {
+        connectivityHandler.removeCallbacks(connectivityCheckRunnable)
+        connectivityHandler.postDelayed(connectivityCheckRunnable, 700L)
+    }
+
+    private fun handleConnectivityChange() {
+        val online = isInternetAvailable()
+
+        if (lastKnownOnline == online) {
+            return
+        }
+
+        lastKnownOnline = online
+
+        val currentMap = map ?: return
+        applyBackgroundMap()
+
+        if (offlineMode) {
+            return
+        }
+
+        if (online) {
+            if (automaticOfflineActive) {
+                automaticOfflineActive = false
+                automaticOfflineSwitchInProgress = false
+
+                currentMap.setStyle(MAP_STYLE_URL) {
+                    initializeMapLayersAndInteraction(currentMap)
+                    restoreMapStateAfterStyleChange()
+
+                    Toast.makeText(
+                        this,
+                        "🌐 Internet je dostupný – online mapa je aktívna.",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        } else {
+            activateAutomaticOfflineMap(currentMap, false)
+        }
+    }
+
+    private fun activateAutomaticOfflineMap(
+        mapInstance: MapLibreMap,
+        showOnlineFallback: Boolean
+    ) {
+        if (automaticOfflineSwitchInProgress || automaticOfflineActive) {
+            return
+        }
+
+        automaticOfflineSwitchInProgress = true
+
+        offlineManager.listOfflineRegions(
+            object : OfflineManager.ListOfflineRegionsCallback {
+
+                override fun onList(regions: Array<org.maplibre.android.offline.OfflineRegion>?) {
+                    runOnUiThread {
+                        val selectedRegion = selectOfflineRegionForCurrentLocation(regions)
+
+                        if (selectedRegion == null) {
+                            automaticOfflineSwitchInProgress = false
+
+                            if (showOnlineFallback) {
+                                mapInstance.setStyle(MAP_STYLE_URL) {
+                                    initializeMapLayersAndInteraction(mapInstance)
+                                }
+                            }
+
+                            Toast.makeText(
+                                this@MapActivity,
+                                "📡 Internet nie je dostupný a pre túto polohu nie je stiahnutá offline mapa.",
+                                Toast.LENGTH_LONG
+                            ).show()
+                            return@runOnUiThread
+                        }
+
+                        mapInstance.setOfflineRegionDefinition(
+                            selectedRegion.definition
+                        ) {
+                            automaticOfflineActive = true
+                            automaticOfflineSwitchInProgress = false
+                            initializeMapLayersAndInteraction(mapInstance)
+                            restoreMapStateAfterStyleChange()
+
+                            Toast.makeText(
+                                this@MapActivity,
+                                "📴 Internet bol odpojený – používam stiahnutú offline mapu.",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+                }
+
+                override fun onError(error: String) {
+                    runOnUiThread {
+                        automaticOfflineSwitchInProgress = false
+
+                        if (showOnlineFallback) {
+                            mapInstance.setStyle(MAP_STYLE_URL) {
+                                initializeMapLayersAndInteraction(mapInstance)
+                            }
+                        }
+
+                        Toast.makeText(
+                            this@MapActivity,
+                            "Offline mapy sa nepodarilo načítať: $error",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            }
+        )
+    }
+
+    private fun selectOfflineRegionForCurrentLocation(
+        regions: Array<org.maplibre.android.offline.OfflineRegion>?
+    ): org.maplibre.android.offline.OfflineRegion? {
+        if (regions.isNullOrEmpty()) {
+            return null
+        }
+
+        val location = lastLocation ?: return regions.firstOrNull()
+
+        return regions.firstOrNull { region ->
+            try {
+                val metadata = JSONObject(String(region.metadata, Charsets.UTF_8))
+                val west = metadata.optDouble("west", Double.NaN)
+                val south = metadata.optDouble("south", Double.NaN)
+                val east = metadata.optDouble("east", Double.NaN)
+                val north = metadata.optDouble("north", Double.NaN)
+
+                !west.isNaN() && !south.isNaN() &&
+                    !east.isNaN() && !north.isNaN() &&
+                    location.longitude in west..east &&
+                    location.latitude in south..north
+            } catch (_: Exception) {
+                false
             }
         }
     }
 
-    // ====================================
-    // INICIALIZÁCIA MAPY
-    // ====================================
+    private fun restoreMapStateAfterStyleChange() {
+        drawOffRoadLine()
+        if (selectedLatitude != null && selectedLongitude != null) targetLocationSource?.setGeoJson(createTargetGeoJson(selectedLatitude!!,selectedLongitude!!))
+        updateViaPointSource()
 
-    private fun initializeMapLayersAndInteraction(
-        mapInstance: MapLibreMap
-    ) {
+        if (routeGeometryPoints.isNotEmpty()) {
+            drawNavigationRoute()
+        }
 
-        mapInstance.cameraPosition =
-            CameraPosition.Builder()
-                .target(
-                    LatLng(
-                        48.7,
-                        19.7
+        val location = lastLocation
+        if (location != null) {
+            locationSource?.setGeoJson(
+                createLocationGeoJson(location.latitude, location.longitude)
+            )
+        }
+    }
+
+    private fun initializeMapLayersAndInteraction(mapInstance: MapLibreMap) {
+
+                // Offline definícia môže po načítaní vrátiť limit zoomu na
+                // maximum stiahnutého regiónu. Znova povolíme priblíženie až
+                // na úroveň 20; chýbajúce vyššie offline úrovne sa zobrazia
+                // zväčšením najdetailnejšej dostupnej vektorovej dlaždice.
+                mapInstance.setMinZoomPreference(2.0)
+                mapInstance.setMaxZoomPreference(20.0)
+
+                mapInstance.uiSettings.apply {
+                    setZoomGesturesEnabled(true)
+                    setDoubleTapGesturesEnabled(true)
+                    setQuickZoomGesturesEnabled(true)
+                    setScrollGesturesEnabled(true)
+                }
+
+                mapInstance.cameraPosition =
+                    CameraPosition.Builder()
+                        .target(
+                            LatLng(
+                                48.7,
+                                19.7
+                            )
+                        )
+                        .zoom(6.0)
+                        .build()
+
+                // ====================================
+                // SEARCH MARKER
+                // ====================================
+
+                val searchSource =
+                    GeoJsonSource(
+                        "search-marker-source"
                     )
-                )
-                .zoom(6.0)
-                .build()
 
-        // ====================================
-        // SEARCH MARKER
-        // ====================================
-
-        val searchSource =
-            GeoJsonSource(
-                "search-marker-source"
-            )
-
-        mapInstance.style?.addSource(
-            searchSource
-        )
-
-        searchMarkerSource =
-            searchSource
-
-        val searchLayer =
-            SymbolLayer(
-                "search-marker-layer",
-                "search-marker-source"
-            )
-
-        searchLayer.withProperties(
-            PropertyFactory.iconImage(
-                "marker-15"
-            ),
-            PropertyFactory.iconSize(
-                1.5f
-            ),
-            PropertyFactory.iconAllowOverlap(
-                true
-            ),
-            PropertyFactory.iconIgnorePlacement(
-                true
-            )
-        )
-
-        mapInstance.style?.addLayer(
-            searchLayer
-        )
-
-        // ====================================
-        // CIEĽ
-        // ====================================
-
-        val targetSource =
-            GeoJsonSource(
-                "target-location-source"
-            )
-
-        mapInstance.style?.addSource(
-            targetSource
-        )
-
-        targetLocationSource =
-            targetSource
-
-        val targetLayer =
-            CircleLayer(
-                "target-location-layer",
-                "target-location-source"
-            )
-
-        targetLayer.withProperties(
-            PropertyFactory.circleRadius(
-                9f
-            ),
-            PropertyFactory.circleColor(
-                "#E53935"
-            ),
-            PropertyFactory.circleStrokeColor(
-                "#FFFFFF"
-            ),
-            PropertyFactory.circleStrokeWidth(
-                3f
-            )
-        )
-
-        mapInstance.style?.addLayer(
-            targetLayer
-        )
-
-        // ====================================
-        // HLAVNÁ NAVIGAČNÁ TRASA
-        // ====================================
-
-        val route =
-            GeoJsonSource(
-                "navigation-route-source"
-            )
-
-        mapInstance.style?.addSource(
-            route
-        )
-
-        routeSource =
-            route
-
-        val routeLayer =
-            LineLayer(
-                "navigation-route-layer",
-                "navigation-route-source"
-            )
-
-        routeLayer.withProperties(
-            PropertyFactory.lineColor(
-                "#1976D2"
-            ),
-            PropertyFactory.lineWidth(
-                6f
-            ),
-            PropertyFactory.lineOpacity(
-                0.9f
-            ),
-            PropertyFactory.lineCap(
-                "round"
-            ),
-            PropertyFactory.lineJoin(
-                "round"
-            )
-        )
-
-        mapInstance.style?.addLayer(
-            routeLayer
-        )
-
-        // ====================================
-        // OFF-ROAD TRASA
-        // ====================================
-
-        val offRoad =
-            GeoJsonSource(
-                "off-road-route-source"
-            )
-
-        mapInstance.style?.addSource(
-            offRoad
-        )
-
-        offRoadSource =
-            offRoad
-
-        val offRoadLayer =
-            LineLayer(
-                "off-road-route-layer",
-                "off-road-route-source"
-            )
-
-        offRoadLayer.withProperties(
-            PropertyFactory.lineColor(
-                "#1976D2"
-            ),
-            PropertyFactory.lineWidth(
-                5.5f
-            ),
-            PropertyFactory.lineOpacity(
-                0.9f
-            ),
-            PropertyFactory.lineCap(
-                "round"
-            ),
-            PropertyFactory.lineJoin(
-                "round"
-            ),
-            PropertyFactory.lineDasharray(
-                arrayOf(
-                    1.0f,
-                    1.2f
-                )
-            )
-        )
-
-        mapInstance.style?.addLayer(
-            offRoadLayer
-        )
-
-        // ====================================
-        // MEDZIBODY
-        // ====================================
-
-        val viaSource =
-            GeoJsonSource(
-                "route-via-source"
-            )
-
-        mapInstance.style?.addSource(
-            viaSource
-        )
-
-        routeViaSource =
-            viaSource
-
-        val viaLayer =
-            CircleLayer(
-                "route-via-layer",
-                "route-via-source"
-            )
-
-        viaLayer.withProperties(
-            PropertyFactory.circleRadius(
-                7f
-            ),
-            PropertyFactory.circleColor(
-                "#FF9800"
-            ),
-            PropertyFactory.circleStrokeColor(
-                "#FFFFFF"
-            ),
-            PropertyFactory.circleStrokeWidth(
-                2.5f
-            )
-        )
-
-        mapInstance.style?.addLayer(
-            viaLayer
-        )
-
-        // ====================================
-        // GPS ŠÍPKA
-        // ====================================
-
-        val gpsArrow =
-            createGpsArrowBitmap()
-
-        mapInstance.style?.addImage(
-            "turista-gps-arrow",
-            gpsArrow
-        )
-
-        val gpsSource =
-            GeoJsonSource(
-                "gps-location-source"
-            )
-
-        mapInstance.style?.addSource(
-            gpsSource
-        )
-
-        locationSource =
-            gpsSource
-
-        // ====================================
-        // GPS BOD
-        // ====================================
-
-        val gpsDotLayer =
-            CircleLayer(
-                "gps-location-dot-layer",
-                "gps-location-source"
-            )
-
-        gpsDotLayer.withProperties(
-            PropertyFactory.circleRadius(
-                5f
-            ),
-            PropertyFactory.circleColor(
-                "#1976D2"
-            ),
-            PropertyFactory.circleStrokeColor(
-                "#FFFFFF"
-            ),
-            PropertyFactory.circleStrokeWidth(
-                2.5f
-            )
-        )
-
-        mapInstance.style?.addLayer(
-            gpsDotLayer
-        )
-
-        // ====================================
-        // GPS ŠÍPKA
-        // ====================================
-
-        val gpsLayer =
-            SymbolLayer(
-                "gps-location-layer",
-                "gps-location-source"
-            )
-
-        gpsLayer.withProperties(
-            PropertyFactory.iconImage(
-                "turista-gps-arrow"
-            ),
-            PropertyFactory.iconSize(
-                1.15f
-            ),
-            PropertyFactory.iconAnchor(
-                "center"
-            ),
-            PropertyFactory.iconAllowOverlap(
-                true
-            ),
-            PropertyFactory.iconIgnorePlacement(
-                true
-            ),
-            PropertyFactory.iconRotate(
-                currentAzimuth
-            ),
-            PropertyFactory.iconPitchAlignment(
-                "map"
-            ),
-            PropertyFactory.iconRotationAlignment(
-                "map"
-            )
-        )
-
-        mapInstance.style?.addLayer(
-            gpsLayer
-        )
-
-        locationLayer =
-            gpsLayer
-
-        // ====================================
-        // OBNOVA GPS
-        // ====================================
-
-        val savedLocation =
-            lastLocation
-
-        if (
-            savedLocation != null
-        ) {
-
-            firstGpsLocation =
-                false
-
-            gpsSource.setGeoJson(
-                createLocationGeoJson(
-                    savedLocation.latitude,
-                    savedLocation.longitude
-                )
-            )
-        }
-
-        // ====================================
-        // KLIKNUTIE NA MAPU
-        // ====================================
-
-        mapInstance.addOnMapClickListener { point ->
-
-            if (
-                routeEditMode
-            ) {
-
-                addRouteViaPoint(
-                    point
+                mapInstance.style?.addSource(
+                    searchSource
                 )
 
-            } else {
+                searchMarkerSource =
+                    searchSource
 
-                selectDestination(
-                    point
-                )
-            }
+                val searchLayer =
+                    SymbolLayer(
+                        "search-marker-layer",
+                        "search-marker-source"
+                    )
 
-            true
-        }
-
-        checkLocationPermission()
-
-        if (
-            lastLocation != null
-        ) {
-
-            val current =
-                lastLocation
-
-            if (
-                current != null
-            ) {
-
-                locationSource?.setGeoJson(
-                    createLocationGeoJson(
-                        current.latitude,
-                        current.longitude
+                searchLayer.withProperties(
+                    PropertyFactory.iconImage(
+                        "marker-15"
+                    ),
+                    PropertyFactory.iconSize(
+                        1.5f
+                    ),
+                    PropertyFactory.iconAllowOverlap(
+                        true
+                    ),
+                    PropertyFactory.iconIgnorePlacement(
+                        true
                     )
                 )
 
-                mapInstance.animateCamera(
-                    CameraUpdateFactory.newLatLngZoom(
-                        LatLng(
-                            current.latitude,
-                            current.longitude
-                        ),
-                        15.0
+                mapInstance.style?.addLayer(
+                    searchLayer
+                )
+
+                // ====================================
+                // CIEĽ
+                // ====================================
+
+                val targetSource =
+                    GeoJsonSource(
+                        "target-location-source"
+                    )
+
+                mapInstance.style?.addSource(
+                    targetSource
+                )
+
+                targetLocationSource =
+                    targetSource
+
+                val targetLayer =
+                    CircleLayer(
+                        "target-location-layer",
+                        "target-location-source"
+                    )
+
+                targetLayer.withProperties(
+                    PropertyFactory.circleRadius(
+                        9f
+                    ),
+                    PropertyFactory.circleColor(
+                        "#E53935"
+                    ),
+                    PropertyFactory.circleStrokeColor(
+                        "#FFFFFF"
+                    ),
+                    PropertyFactory.circleStrokeWidth(
+                        3f
                     )
                 )
-            }
+
+                mapInstance.style?.addLayer(
+                    targetLayer
+                )
+
+                // ====================================
+                // HLAVNÁ NAVIGAČNÁ TRASA
+                // ====================================
+
+                val route =
+                    GeoJsonSource(
+                        "navigation-route-source"
+                    )
+
+                mapInstance.style?.addSource(
+                    route
+                )
+
+                routeSource =
+                    route
+
+                val routeLayer =
+                    LineLayer(
+                        "navigation-route-layer",
+                        "navigation-route-source"
+                    )
+
+                routeLayer.withProperties(
+                    PropertyFactory.lineColor(
+                        "#1976D2"
+                    ),
+                    PropertyFactory.lineWidth(
+                        6f
+                    ),
+                    PropertyFactory.lineOpacity(
+                        0.9f
+                    ),
+                    PropertyFactory.lineCap(
+                        "round"
+                    ),
+                    PropertyFactory.lineJoin(
+                        "round"
+                    )
+                )
+
+                mapInstance.style?.addLayer(
+                    routeLayer
+                )
+
+                // ====================================
+                // OFF-ROAD TRASA
+                // ====================================
+
+                val offRoad =
+                    GeoJsonSource(
+                        "off-road-route-source"
+                    )
+
+                mapInstance.style?.addSource(
+                    offRoad
+                )
+
+                offRoadSource =
+                    offRoad
+
+                val offRoadLayer =
+                    LineLayer(
+                        "off-road-route-layer",
+                        "off-road-route-source"
+                    )
+
+                offRoadLayer.withProperties(
+                    PropertyFactory.lineColor(
+                        "#1976D2"
+                    ),
+                    PropertyFactory.lineWidth(
+                        5.5f
+                    ),
+                    PropertyFactory.lineOpacity(
+                        0.9f
+                    ),
+                    PropertyFactory.lineCap(
+                        "round"
+                    ),
+                    PropertyFactory.lineJoin(
+                        "round"
+                    ),
+                    PropertyFactory.lineDasharray(
+                        arrayOf(
+                            1.0f,
+                            1.2f
+                        )
+                    )
+                )
+
+                mapInstance.style?.addLayer(
+                    offRoadLayer
+                )
+
+                // ====================================
+                // MEDZIBODY
+                // ====================================
+
+                val viaSource =
+                    GeoJsonSource(
+                        "route-via-source"
+                    )
+
+                mapInstance.style?.addSource(
+                    viaSource
+                )
+
+                routeViaSource =
+                    viaSource
+
+                val viaLayer =
+                    CircleLayer(
+                        "route-via-layer",
+                        "route-via-source"
+                    )
+
+                viaLayer.withProperties(
+                    PropertyFactory.circleRadius(
+                        7f
+                    ),
+                    PropertyFactory.circleColor(
+                        "#FF9800"
+                    ),
+                    PropertyFactory.circleStrokeColor(
+                        "#FFFFFF"
+                    ),
+                    PropertyFactory.circleStrokeWidth(
+                        2.5f
+                    )
+                )
+
+                mapInstance.style?.addLayer(
+                    viaLayer
+                )
+
+                // ====================================
+                // GPS ŠÍPKA
+                // ====================================
+
+                val gpsArrow =
+                    createGpsArrowBitmap()
+
+                mapInstance.style?.addImage(
+                    "turista-gps-arrow",
+                    gpsArrow
+                )
+
+                val gpsSource =
+                    GeoJsonSource(
+                        "gps-location-source"
+                    )
+
+                mapInstance.style?.addSource(
+                    gpsSource
+                )
+
+                locationSource =
+                    gpsSource
+
+                // ====================================
+                // GPS BOD
+                // ====================================
+
+                val gpsDotLayer =
+                    CircleLayer(
+                        "gps-location-dot-layer",
+                        "gps-location-source"
+                    )
+
+                gpsDotLayer.withProperties(
+                    PropertyFactory.circleRadius(
+                        5f
+                    ),
+                    PropertyFactory.circleColor(
+                        "#1976D2"
+                    ),
+                    PropertyFactory.circleStrokeColor(
+                        "#FFFFFF"
+                    ),
+                    PropertyFactory.circleStrokeWidth(
+                        2.5f
+                    )
+                )
+
+                mapInstance.style?.addLayer(
+                    gpsDotLayer
+                )
+
+                // ====================================
+                // GPS ŠÍPKA
+                // ====================================
+
+                val gpsLayer =
+                    SymbolLayer(
+                        "gps-location-layer",
+                        "gps-location-source"
+                    )
+
+                gpsLayer.withProperties(
+                    PropertyFactory.iconImage(
+                        "turista-gps-arrow"
+                    ),
+                    PropertyFactory.iconSize(
+                        1.15f
+                    ),
+                    PropertyFactory.iconAnchor(
+                        "center"
+                    ),
+                    PropertyFactory.iconAllowOverlap(
+                        true
+                    ),
+                    PropertyFactory.iconIgnorePlacement(
+                        true
+                    ),
+                    PropertyFactory.iconRotate(
+                        currentAzimuth
+                    ),
+                    PropertyFactory.iconPitchAlignment(
+                        "map"
+                    ),
+                    PropertyFactory.iconRotationAlignment(
+                        "map"
+                    )
+                )
+
+                mapInstance.style?.addLayer(
+                    gpsLayer
+                )
+
+                locationLayer =
+                    gpsLayer
+
+                mapInstance.style?.let { style ->
+                    if (style.getSource("route-preview-source") == null) {
+                        style.addSource(GeoJsonSource("route-preview-source", emptyGeoJson()))
+                        style.addLayer(LineLayer("route-preview-layer", "route-preview-source").withProperties(
+                            PropertyFactory.lineColor("#1976D2"),PropertyFactory.lineWidth(4f),PropertyFactory.lineDasharray(arrayOf(1f,1.2f))))
+                    }
+                }
+                applyMapSettings()
+                restoreSavedTrack()
+                findViewById<View>(R.id.mapRoot).post { openSavedIntent() }
+
+                // ====================================
+                // OBNOVA GPS
+                // ====================================
+
+                val savedLocation =
+                    lastLocation
+
+                if (
+                    savedLocation != null
+                ) {
+
+                    firstGpsLocation =
+                        false
+
+                    gpsSource.setGeoJson(
+                        createLocationGeoJson(
+                            savedLocation.latitude,
+                            savedLocation.longitude
+                        )
+                    )
+                }
+
+                // ====================================
+                // KLIKNUTIE NA MAPU
+                // ====================================
+
+                checkLocationPermission()
+
+                if (
+                    lastLocation != null
+                ) {
+
+                    val current =
+                        lastLocation
+
+                    if (
+                        current != null
+                    ) {
+
+                        locationSource?.setGeoJson(
+                            createLocationGeoJson(
+                                current.latitude,
+                                current.longitude
+                            )
+                        )
+
+                        mapInstance.animateCamera(
+                            CameraUpdateFactory.newLatLngZoom(
+                                LatLng(
+                                    current.latitude,
+                                    current.longitude
+                                ),
+                                15.0
+                            )
+                        )
+                    }
+                }
         }
+
+    private fun setupMapControls() {
 
         // ====================================
         // VYHĽADÁVANIE
@@ -1156,211 +1404,42 @@ override fun onRegionNotFound() {
                 R.id.searchMap
             )
 
-        searchMap.isSingleLine =
-            true
-
-        searchMap.imeOptions =
-            EditorInfo.IME_ACTION_SEARCH
-
-        searchMap.setOnEditorActionListener {
-            _,
-            actionId,
-            event ->
-
-            val searchText =
-                searchMap.text
-                    .toString()
-                    .trim()
-
-            val enterPressed =
-                event != null &&
-                event.keyCode ==
-                KeyEvent.KEYCODE_ENTER
-
-            if (
-                searchText.isNotEmpty() &&
-                (
-                    actionId ==
-                    EditorInfo.IME_ACTION_SEARCH ||
-                    actionId ==
-                    EditorInfo.IME_ACTION_DONE ||
-                    enterPressed
-                )
-            ) {
-
-                searchPlace(
-                    searchText
-                )
-
-                true
-
+        placeSearch = PlaceSearch(this, searchMap, { isInternetAvailable() }) { lat, lon, name ->
+            moveToSearchResult(lat, lon, name)
+            selectDestination(LatLng(lat,lon))
+            selectedPlaceName = name
+        }
+        searchMap.setOnFocusChangeListener { _, focused ->
+            if(focused) {
+                targetPanel.visibility=View.GONE
+                navigationPanel?.visibility=View.GONE
+                routeEditPanel?.visibility=View.GONE
+                placeSearch?.search()
             } else {
-
-                false
+                placeSearch?.cancel()
+                targetPanel.visibility=if(selectedLatitude!=null && !routeEditMode) View.VISIBLE else View.GONE
+                navigationPanel?.visibility=if(navigationActive && !routeEditMode) View.VISIBLE else View.GONE
+                routeEditPanel?.visibility=if(routeEditMode) View.VISIBLE else View.GONE
             }
         }
+        findViewById<View>(R.id.savePlaceButton).setOnClickListener { saveSelectedPlace() }
 
-        // ====================================
-        // ZÁLOŽNÉ VYHĽADÁVANIE PRI ENTER
-        // ====================================
-
-        searchMap.setOnKeyListener {
-            _,
-            keyCode,
-            event ->
-
-            if (
-                keyCode ==
-                KeyEvent.KEYCODE_ENTER &&
-                event.action ==
-                KeyEvent.ACTION_DOWN
-            ) {
-
-                val searchText =
-                    searchMap.text
-                        .toString()
-                        .trim()
-
-                if (
-                    searchText.isNotEmpty()
-                ) {
-
-                    searchPlace(
-                        searchText
-                    )
-                }
-
-                true
-
-            } else {
-
-                false
-            }
-        }
-
-        // ====================================
-        // KOMPAS
-        // ====================================
-
-        val compassButton =
-            findViewById<Button>(
-                R.id.compassButton
-            )
-
-        val compassOverlay =
-            findViewById<FrameLayout>(
-                R.id.compassOverlay
-            )
-
-        compassView =
-            CompassView(
-                this
-            )
-
+        val compassOverlay = findViewById<FrameLayout>(R.id.compassOverlay)
+        compassView = CompassView(this)
         compassOverlay.removeAllViews()
+        compassOverlay.addView(compassView, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+        ))
+        compassOverlay.setOnClickListener { compassOverlay.visibility = View.GONE }
 
-        compassOverlay.addView(
-            compassView,
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-            )
-        )
-
-        compassButton.setOnClickListener {
-
-            if (
-                compassOverlay.visibility ==
-                View.VISIBLE
-            ) {
-
-                compassOverlay.visibility =
-                    View.GONE
-
-            } else {
-
-                compassOverlay.visibility =
-                    View.VISIBLE
-            }
+        findViewById<View>(R.id.mapMenuButton).setOnClickListener { anchor ->
+            showMapMenu(anchor)
         }
-
-        // ====================================
-        // MOJA POLOHA
-        // ====================================
-
-        val locationButton =
-            findViewById<Button>(
-                R.id.locationButton
-            )
-
-        locationButton.setOnClickListener {
-
-            if (
-                hasLocationPermission()
-            ) {
-
-                centerOnMyLocation()
-
-            } else {
-
-                checkLocationPermission()
-            }
+        findViewById<View>(R.id.locationButton).setOnClickListener {
+            navigationFollowPaused = false
+            if (hasLocationPermission()) centerOnMyLocation() else checkLocationPermission()
         }
-
-        // ====================================
-        // OFFLINE MAPY
-        // ====================================
-
-        val offlineMapsButton =
-            findViewById<Button>(
-                R.id.offlineMapsButton
-            )
-
-        offlineMapsButton.setOnClickListener {
-
-            startActivity(
-                Intent(
-                    this,
-                    OfflineMapsActivity::class.java
-                )
-            )
-        }
-
-        // ====================================
-        // NASTAVENIA
-        // ====================================
-
-        val settingsButton =
-            findViewById<Button>(
-                R.id.settingsButton
-            )
-
-        settingsButton.setOnClickListener {
-
-            Toast.makeText(
-                this,
-                "⚙️ Nastavenia – pripravujeme",
-                Toast.LENGTH_SHORT
-            ).show()
-        }
-
-        // ====================================
-        // REŽIMY MAPY
-        // ====================================
-
-        val mapModesButton =
-            findViewById<Button>(
-                R.id.mapModesButton
-            )
-
-        mapModesButton.setOnClickListener {
-
-            Toast.makeText(
-                this,
-                "🗺️ Režimy mapy – pripravujeme",
-                Toast.LENGTH_SHORT
-            ).show()
-        }
+        findViewById<View>(R.id.mapModesButton).setOnClickListener { showMapLayersDialog() }
 
         // ====================================
         // SENZOR
@@ -1381,60 +1460,217 @@ override fun onRegionNotFound() {
     // VÝBER REŽIMU NAVIGÁCIE
     // ====================================
 
-    private fun showNavigationModeDialog() {
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
-        val modes =
-            arrayOf(
-                "🚶 Pešo",
-                "🚲 Bicykel",
-                "🚗 Auto"
-            )
+    private fun showMapMenu(anchor: View) {
+        if (mapMenu?.isShowing == true) {
+            mapMenu?.dismiss()
+            return
+        }
+        placeSearch?.cancel()
+        val content = layoutInflater.inflate(R.layout.popup_map_menu, null, false)
+        val availableWidth = findViewById<View>(R.id.mapRoot).width - dp(32)
+        val popup = PopupWindow(content, minOf(dp(272), availableWidth.coerceAtLeast(dp(180))),
+            ViewGroup.LayoutParams.WRAP_CONTENT, true)
+        popup.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        popup.isOutsideTouchable = true
+        val visible = android.graphics.Rect()
+        anchor.getWindowVisibleDisplayFrame(visible)
+        popup.height = minOf(dp(456), (visible.height()-dp(100)).coerceAtLeast(dp(120)))
+        popup.elevation = dp(12).toFloat()
+        popup.inputMethodMode = PopupWindow.INPUT_METHOD_NOT_NEEDED
+        popup.setOnDismissListener {
+            mapMenu = null
+            anchor.contentDescription = "Otvoriť menu"
+        }
+        content.findViewById<View>(R.id.menuAccount).setOnClickListener{popup.dismiss();startActivity(Intent(this,AccountActivity::class.java))}
+        content.findViewById<View>(R.id.menuDownloads).setOnClickListener {
+            popup.dismiss()
+            startActivity(Intent(this, OfflineMapsActivity::class.java))
+        }
+        content.findViewById<View>(R.id.menuSettings).setOnClickListener {
+            popup.dismiss()
+            startActivity(Intent(this, SettingsActivity::class.java))
+        }
+        content.findViewById<View>(R.id.menuCompass).setOnClickListener {
+            popup.dismiss()
+            if (rotationSensor == null) {
+                Toast.makeText(this, "Toto zariadenie nemá podporovaný kompasový senzor.", Toast.LENGTH_LONG).show()
+            } else {
+                val overlay = findViewById<View>(R.id.compassOverlay)
+                val root = findViewById<View>(R.id.mapRoot)
+                val size = minOf(dp(300), root.width - root.paddingLeft - root.paddingRight - dp(100),
+                    root.height - root.paddingTop - root.paddingBottom - dp(24)).coerceAtLeast(dp(120))
+                overlay.layoutParams = overlay.layoutParams.apply { width = size; height = size }
+                overlay.visibility = if (overlay.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+            }
+        }
+        content.findViewById<View>(R.id.menuRecognizer).setOnClickListener {popup.dismiss();startActivity(Intent(this,RecognizerActivity::class.java))}
+        listOf(R.id.menuSteps to "steps", R.id.menuRecord to "record", R.id.menuSaved to "saved", R.id.menuDonate to "donate").forEach { (id,page) ->
+            content.findViewById<View>(id).setOnClickListener {
+                popup.dismiss()
+                startActivity(Intent(this,if(page=="saved") SavedFoldersActivity::class.java else TripActivity::class.java).putExtra("page",page))
+            }
+        }
+        mapMenu = popup
+        anchor.contentDescription = "Zavrieť menu"
+        popup.showAsDropDown(anchor, 0, dp(8), Gravity.END)
+    }
 
+    private fun applyUserSettings() {
+        if (settings.keepScreenOn) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        if (!settings.voiceGuidance) textToSpeech?.stop()
+        if (lastFollowSetting != settings.followNavigation) navigationFollowPaused = false
+        lastFollowSetting = settings.followNavigation
+        applyMapSettings()
+        updateTargetDistance()
+        updateNavigationPanel()
+    }
+
+    private fun applyMapSettings() {
+        val currentMap = map ?: return
+        currentMap.uiSettings.setCompassEnabled(false)
+        currentMap.uiSettings.setRotateGesturesEnabled(settings.rotateMap)
+        if (!settings.rotateMap && currentMap.cameraPosition.bearing != 0.0) {
+            currentMap.cameraPosition = CameraPosition.Builder(currentMap.cameraPosition).bearing(0.0).build()
+        }
+        applyBackgroundMap()
+    }
+
+    private fun applyBackgroundMap() {
+        val style = map?.style ?: return
+        if (style.getLayer("search-marker-layer") == null) return
+        val key = TrafficKeyStore(this).get()
+        val type = if (isInternetAvailable() && (settings.mapType != "traffic" || key.isNotBlank())) settings.mapType else "default"
+        MapBackgrounds.apply(style, type, key, refresh = type == "traffic")
+        findViewById<TextView>(R.id.mapAttribution).apply {
+            text = Html.fromHtml(MapBackgrounds.attribution(type), Html.FROM_HTML_MODE_LEGACY)
+            movementMethod = LinkMovementMethod.getInstance()
+        }
+    }
+
+    private fun showMapLayersDialog() {
+        val current = if (isInternetAvailable()) settings.mapType else "default"
+        val selected = MapBackgrounds.ids.indexOf(current).coerceAtLeast(0)
         AlertDialog.Builder(this)
-            .setTitle(
-                "Vyber spôsob navigácie"
-            )
-            .setItems(
-                modes
-            ) { _, which ->
-
-                when (which) {
-
-                    0 -> {
-
-                        navigationMode =
-                            NavigationMode.WALK
-
-                        startNavigationToSelectedPoint()
-                    }
-
-                    1 -> {
-
-                        navigationMode =
-                            NavigationMode.BIKE
-
-                        startNavigationToSelectedPoint()
-                    }
-
-                    2 -> {
-
-                        navigationMode =
-                            NavigationMode.CAR
-
-                        startNavigationToSelectedPoint()
-                    }
+            .setTitle("Typ mapy")
+            .setSingleChoiceItems(MapBackgrounds.titles, selected) { dialog, index ->
+                if (index != 0 && !isInternetAvailable()) {
+                    (dialog as AlertDialog).listView.setItemChecked(selected, true)
+                    Toast.makeText(this, "Satelitná, terénna a dopravná mapa potrebujú internet. Offline používam stiahnutú predvolenú mapu.", Toast.LENGTH_LONG).show()
+                } else if (MapBackgrounds.ids[index] == "traffic" && TrafficKeyStore(this).get().isBlank()) {
+                    dialog.dismiss()
+                    AlertDialog.Builder(this).setTitle("Dopravná mapa")
+                        .setMessage("Živá premávka potrebuje vlastný API kľúč TomTom. Môžeš ho overiť a uložiť v nastaveniach.")
+                        .setPositiveButton("Nastavenia") { _, _ -> startActivity(Intent(this, SettingsActivity::class.java)) }
+                        .setNegativeButton("Zavrieť",null).show()
+                } else if (map?.style?.getLayer("search-marker-layer") == null) {
+                    (dialog as AlertDialog).listView.setItemChecked(selected, true)
+                    Toast.makeText(this, "Počkaj, kým sa načíta mapa.", Toast.LENGTH_SHORT).show()
+                } else {
+                    settings.mapType = MapBackgrounds.ids[index]
+                    applyBackgroundMap()
+                    dialog.dismiss()
                 }
             }
+            .setNegativeButton("Zavrieť", null)
             .show()
+    }
+
+    private fun updateModeSelection() {
+        listOf(Triple(R.id.walkRouteButton,NavigationMode.WALK,"Pešo"),Triple(R.id.bikeRouteButton,NavigationMode.BIKE,"Bicykel"),Triple(R.id.carRouteButton,NavigationMode.CAR,"Auto")).forEach { (id,mode,label) ->
+            findViewById<Button>(id).apply {
+                val chosen=selectedNavigationMode==mode
+                isSelected=chosen;text=if(chosen) "✓ $label" else label
+                contentDescription=label+if(chosen) ", vybrané" else ", nevybrané"
+                backgroundTintList=android.content.res.ColorStateList.valueOf(if(chosen) Color.rgb(23,53,44) else Color.rgb(226,234,215))
+                setTextColor(if(chosen) Color.WHITE else Color.rgb(23,53,44))
+            }
+        }
     }
 
     // ====================================
     // VÝBER CIEĽA
     // ====================================
 
+    private fun saveSelectedPlace() {
+        val lat=selectedLatitude ?: return
+        val lon=selectedLongitude ?: return
+        val input=EditText(this).apply {
+            setSingleLine(true);setText(selectedPlaceName.ifBlank {"Moje miesto"});selectAll()
+            filters=arrayOf(android.text.InputFilter.LengthFilter(120))
+        }
+        val dialog=AlertDialog.Builder(this).setTitle("Uložiť miesto").setView(input)
+            .setPositiveButton("Uložiť",null).setNegativeButton("Zrušiť",null).create()
+        dialog.setOnShowListener {dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val name=input.text.toString().trim()
+            if(name.isBlank()) input.error="Zadaj názov" else {
+                try {TripStore.get(this).savePlace(name,lat,lon);dialog.dismiss();Toast.makeText(this,"Miesto je uložené v menu Uložené.",Toast.LENGTH_SHORT).show()}
+                catch(_:Exception){input.error="Miesto sa nepodarilo uložiť."}
+            }
+        }};dialog.show()
+    }
+
+    override fun onNewIntent(newIntent:Intent) {
+        super.onNewIntent(newIntent);setIntent(newIntent);openSavedIntent()
+    }
+    private fun openSavedIntent() {
+        if(map?.style?.getLayer("search-marker-layer")==null) return
+        if(intent.hasExtra("saved_place")) {
+            val id=intent.getLongExtra("saved_place",0);intent.removeExtra("saved_place")
+            val place=TripStore.get(this).places().firstOrNull {it.id==id} ?: return
+            selectDestination(LatLng(place.lat,place.lon));selectedPlaceName=place.name
+            moveToSearchResult(place.lat,place.lon,place.name)
+        }
+        if(intent.hasExtra("saved_track")) {
+            val id=intent.getLongExtra("saved_track",0);intent.removeExtra("saved_track")
+            val token=++savedTrackLoad
+            if(id<0) {savedTrackJson=null;restoreSavedTrack();return}
+            thread {
+                val points=TripStore.get(this).samples(id)
+                val lines=JSONArray()
+                points.groupBy {it.segment}.values.forEach {segment ->
+                    if(segment.size>=2) lines.put(JSONArray().apply {segment.forEach {put(JSONArray().put(it.lon).put(it.lat))}})
+                }
+                val features=JSONArray()
+                features.put(JSONObject().put("type","Feature").put("properties",JSONObject()).put("geometry",JSONObject().put("type","MultiLineString").put("coordinates",lines)))
+                points.groupBy {it.segment}.values.filter {it.size==1}.forEach { segment ->
+                    val point=segment.first()
+                    features.put(JSONObject().put("type","Feature").put("properties",JSONObject()).put("geometry",JSONObject().put("type","Point").put("coordinates",JSONArray().put(point.lon).put(point.lat))))
+                }
+                val json=JSONObject().put("type","FeatureCollection").put("features",features).toString()
+                runOnUiThread {
+                    if(isDestroyed || token!=savedTrackLoad) return@runOnUiThread
+                    savedTrackJson=json;restoreSavedTrack();navigationFollowPaused=true;firstGpsLocation=false
+                    if(points.isNotEmpty() && points.all {kotlin.math.abs(it.lat-points[0].lat)<0.00001 && kotlin.math.abs(it.lon-points[0].lon)<0.00001}) map?.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(points[0].lat,points[0].lon),16.0))
+                    else if(points.isNotEmpty()) {
+                        val bounds=LatLngBounds.Builder();points.forEach {bounds.include(LatLng(it.lat,it.lon))}
+                        map?.animateCamera(CameraUpdateFactory.newLatLngBounds(bounds.build(),dp(64)))
+                    }
+                    Toast.makeText(this,"Uložená trasa je zobrazená fialovou farbou.",Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+    private fun restoreSavedTrack() {
+        val style=map?.style ?: return
+        if(style.getSource("saved-track-source")==null) {
+            style.addSource(GeoJsonSource("saved-track-source",emptyGeoJson()))
+            style.addLayer(LineLayer("saved-track-layer","saved-track-source").withProperties(PropertyFactory.lineColor("#8E44AD"),PropertyFactory.lineWidth(5f)))
+            style.addLayer(CircleLayer("saved-track-point","saved-track-source").withProperties(PropertyFactory.circleColor("#8E44AD"),PropertyFactory.circleRadius(5f)))
+        }
+        style.getSourceAs<GeoJsonSource>("saved-track-source")?.setGeoJson(savedTrackJson?:emptyGeoJson())
+    }
+
     private fun selectDestination(
         point: LatLng
     ) {
+        if (navigationActive || routeLoading) clearSelectedTarget()
+        selectedPlaceName = ""
 
         selectedLatitude =
             point.latitude
@@ -1475,29 +1711,39 @@ override fun onRegionNotFound() {
 
     private fun enterRouteEditMode() {
 
-        if (
-            !navigationActive
-        ) {
+        if (selectedLatitude == null || selectedLongitude == null) {
 
             Toast.makeText(
                 this,
-                "Najprv spusti navigáciu.",
+                "Najprv vyber cieľ na mape.",
                 Toast.LENGTH_SHORT
             ).show()
 
             return
         }
 
-        routeEditMode =
-            true
+        findViewById<View>(R.id.searchMap).clearFocus()
+        (getSystemService(INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager).hideSoftInputFromWindow(findViewById<View>(R.id.searchMap).windowToken,0)
+        routeRequest++
+        editUndo.clear()
+        if(nextVia>0) {val passed=nextVia.coerceAtMost(routeViaPoints.size);repeat(passed){routeViaPoints.removeAt(0)};viaOffsets=viaOffsets.drop(passed);nextVia=0}
+        routeLoading = false
+        navigationActive = progress != null
+        textToSpeech?.stop()
+        routeEditMode = true
+        applyMapSettings()
 
-        savedViaPoints =
-            routeViaPoints.toMutableList()
+        savedManualRoute = manualRoute
+        savedViaPoints = routeViaPoints.toMutableList()
+        targetPanel.visibility = View.GONE
+        navigationPanel?.visibility = View.GONE
+        updateEditorMode()
 
         routeEditPanel?.visibility =
             View.VISIBLE
 
         updateRouteEditInfo()
+        updateViaPointSource()
 
         Toast.makeText(
             this,
@@ -1510,24 +1756,30 @@ override fun onRegionNotFound() {
     // PRIDANIE MEDZIBODU
     // ====================================
 
-    private fun addRouteViaPoint(
-        point: LatLng
-    ) {
-
-        if (
-            !routeEditMode
-        ) {
-            return
-        }
-
-        routeViaPoints.add(
-            point
-        )
-
-        updateViaPointSource()
-
-        updateRouteEditInfo()
+    private fun addRouteViaPoint(point: LatLng) {
+        if(!routeEditMode) return
+        val limit=if(manualRoute) 2000 else 98
+        if(routeViaPoints.size>=limit) {Toast.makeText(this,"Dosiahnutý limit $limit bodov.",Toast.LENGTH_SHORT).show();return}
+        if(routeViaPoints.lastOrNull()?.let {RouteProgress.distance(it.navPoint(),point.navPoint())<2}==true) return
+        rememberEdit();routeViaPoints.add(point);updateViaPointSource();updateRouteEditInfo()
     }
+    private fun showRoutePoints() {
+        if(routeViaPoints.isEmpty()) {Toast.makeText(this,"Ťukni na mapu a pridaj prvý bod.",Toast.LENGTH_SHORT).show();return}
+        val names=routeViaPoints.mapIndexed {i,p->"${i+1}. bod · ${String.format(Locale.US,"%.5f, %.5f",p.latitude,p.longitude)}"}.toTypedArray()
+        AlertDialog.Builder(this).setTitle("Poradie bodov").setItems(names) {_,index->
+            AlertDialog.Builder(this).setTitle("Bod ${index+1}").setItems(arrayOf("Ukázať","Posunúť skôr","Posunúť neskôr","Vymazať")) {_,action->
+                if(index !in routeViaPoints.indices) return@setItems
+                when(action) {
+                    0 -> map?.animateCamera(CameraUpdateFactory.newLatLng(routeViaPoints[index]))
+                    1 -> if(index>0) {rememberEdit();java.util.Collections.swap(routeViaPoints,index,index-1)}
+                    2 -> if(index<routeViaPoints.lastIndex) {rememberEdit();java.util.Collections.swap(routeViaPoints,index,index+1)}
+                    3 -> {rememberEdit();routeViaPoints.removeAt(index)}
+                }
+                updateViaPointSource();updateRouteEditInfo()
+            }.show()
+        }.show()
+    }
+
 
     // ====================================
     // HĽADANIE NAJBLIŽŠIEHO MEDZIBODU
@@ -1578,19 +1830,21 @@ override fun onRegionNotFound() {
     // ====================================
 
     private fun updateRouteEditInfo() {
-
-        routeEditInfo?.text =
-            if (
-                routeViaPoints.isEmpty()
-            ) {
-
-                "Medzibody: 0"
-
-            } else {
-
-                "Medzibody: ${routeViaPoints.size}"
-            }
+        routeEditInfo?.text = if (manualRoute)
+            "${routeViaPoints.size} bodov • od tvojej polohy cez body až k cieľu. Bodky sú vlastná trasa; priechodnosť nie je overená."
+        else "${routeViaPoints.size} medzibodov • ťukaním ich pridáš v poradí. Čiara je náhľad; Použiť vypočíta trasu po cestách."
     }
+
+    private fun updateEditorMode() {
+        findViewById<Button>(R.id.routeModeButton).text = if (manualRoute) "Režim: vlastná pešia trasa" else "Režim: po cestách a chodníkoch"
+        findViewById<Button>(R.id.drawRouteButton).apply {
+            visibility = if (manualRoute) View.VISIBLE else View.GONE
+            text = if (drawingRoute) "Posúvať mapu / pridávať body" else "Kresliť prstom"
+        }
+        findViewById<View>(R.id.routeDrawing).visibility = if (routeEditMode && manualRoute && drawingRoute) View.VISIBLE else View.GONE
+        updateRouteEditInfo()
+    }
+
 
     // ====================================
     // ZOBRAZENIE MEDZIBODOV
@@ -1660,8 +1914,13 @@ override fun onRegionNotFound() {
             features
         )
 
-        routeViaSource?.setGeoJson(
-            collection.toString()
+        routeViaSource?.setGeoJson(collection.toString())
+        map?.style?.getSourceAs<GeoJsonSource>("route-preview-source")?.setGeoJson(
+            if (routeEditMode) lineJson(buildList {
+                lastLocation?.let { add(LatLng(it.latitude, it.longitude)) }
+                addAll(routeViaPoints)
+                if (selectedLatitude != null && selectedLongitude != null) add(LatLng(selectedLatitude!!, selectedLongitude!!))
+            }) else emptyGeoJson()
         )
     }
 
@@ -1670,40 +1929,32 @@ override fun onRegionNotFound() {
     // ====================================
 
     private fun finishRouteEditing() {
-
-        routeEditMode =
-            false
-
-        routeEditPanel?.visibility =
-            View.GONE
-
-        if (
-            selectedLatitude == null ||
-            selectedLongitude == null
-        ) {
-
-            return
-        }
-
-        startNavigationToSelectedPoint()
+        routeEditMode = false
+        drawingRoute = false
+        updateEditorMode()
+        updateViaPointSource()
+        routeEditPanel?.visibility = View.GONE
+        if (manualRoute) navigationMode = NavigationMode.WALK
+        if (selectedLatitude != null && selectedLongitude != null) startNavigationToSelectedPoint()
     }
+
 
     // ====================================
     // ZRUŠENIE ÚPRAVY
     // ====================================
 
     private fun cancelRouteEditing() {
-
         routeEditPointsRestore()
-
-        routeEditMode =
-            false
-
-        routeEditPanel?.visibility =
-            View.GONE
-
+        manualRoute = savedManualRoute
+        routeEditMode = false
+        drawingRoute = false
+        updateEditorMode()
+        routeEditPanel?.visibility = View.GONE
+        targetPanel.visibility = View.VISIBLE
+        navigationPanel?.visibility = if (navigationActive) View.VISIBLE else View.GONE
         updateViaPointSource()
     }
+
 
     private fun routeEditPointsRestore() {
 
@@ -1742,25 +1993,7 @@ override fun onRegionNotFound() {
     // FORMÁT VZDIALENOSTI
     // ====================================
 
-    private fun formatDistance(
-        meters: Double
-    ): String {
-
-        return if (
-            meters < 1000
-        ) {
-
-            "${meters.toInt()} m"
-
-        } else {
-
-            String.format(
-                Locale.US,
-                "%.1f km",
-                meters / 1000.0
-            )
-        }
-    }
+    private fun formatDistance(meters: Double): String = settings.formatDistance(meters)
 
     // ====================================
     // SPUSTENIE NAVIGÁCIE
@@ -1806,8 +2039,13 @@ override fun onRegionNotFound() {
             return
         }
 
-        navigationActive =
-            true
+        if (manualRoute && navigationMode != NavigationMode.WALK) {
+            Toast.makeText(this, "Vlastná trasa mimo ciest je pešia. Pre auto alebo bicykel zvoľ režim po cestách.", Toast.LENGTH_LONG).show()
+            return
+        }
+        rerouteGate.reset();nextVia=0;viaOffsets=emptyList()
+        navigationActive = true
+        navigationFollowPaused = false
 
         hybridRouteActive =
             false
@@ -1851,275 +2089,157 @@ override fun onRegionNotFound() {
     // CESTNÁ TRASA
     // ====================================
 
-    private fun requestRoadRoute(
-        startLatitude: Double,
-        startLongitude: Double,
-        endLatitude: Double,
-        endLongitude: Double
-    ) {
-
+    private fun requestRoadRoute(startLatitude: Double, startLongitude: Double, endLatitude: Double, endLongitude: Double, recalculate: Boolean = false) {
+        val token = ++routeRequest
+        val mode = if(recalculate && offRoadNavigationActive) NavigationMode.WALK else navigationMode
+        val manual = manualRoute
+        val vias=if(recalculate) routeViaPoints.drop(nextVia) else routeViaPoints.toList()
+        val offline = offlineMode || automaticOfflineActive || !isInternetAvailable()
+        val points = listOf(LatLng(startLatitude,startLongitude)) + vias + LatLng(endLatitude,endLongitude)
+        routeLoading = true
+        navigationInstruction?.text = "Počítam trasu…"
+        navigationInstructionDistance?.text = ""
+        navigationRemaining?.text = ""
+        if(!recalculate) {
+            progress = null
+            routeSource?.setGeoJson(emptyGeoJson()); offRoadSource?.setGeoJson(emptyGeoJson())
+        }
         thread {
-
-            var connection:
-                HttpURLConnection? =
-                null
-
             try {
-
-                val profile =
-                    when (
-                        navigationMode
-                    ) {
-
-                        NavigationMode.WALK ->
-                            "foot"
-
-                        NavigationMode.BIKE ->
-                            "bike"
-
-                        NavigationMode.CAR ->
-                            "car"
+                val result = if (manual) RouteData(emptyList(), points, emptyList(), 0.0)
+                    else {
+                        val road = calculateRoad(points, mode, offline)
+                        val target = points.last()
+                        val last = road.road.lastOrNull() ?: error("Cesta sa nenašla.")
+                        val gap = RouteProgress.distance(last.navPoint(), target.navPoint())
+                        val tail = if (gap > 15) {
+                            if (mode == NavigationMode.CAR) {
+                                val foot = try { calculateRoad(listOf(last,target), NavigationMode.WALK, offline).road } catch (_: Exception) { emptyList() }
+                                // Never invent a drivable connection to an off-road destination.
+                                (listOf(last) + foot + target).distinctAdjacent()
+                            } else listOf(last,target)
+                        } else emptyList()
+                        road.copy(tail = tail)
                     }
-
-                val waypoints =
-                    mutableListOf<String>()
-
-                waypoints.add(
-                    "$startLongitude,$startLatitude"
-                )
-
-                for (
-                    via in routeViaPoints
-                ) {
-
-                    waypoints.add(
-                        "${via.longitude},${via.latitude}"
-                    )
-                }
-
-                waypoints.add(
-                    "$endLongitude,$endLatitude"
-                )
-
-                val url =
-                    URL(
-                        "https://routing.openstreetmap.de/" +
-                        "$profile/route/v1/" +
-                        "$profile/" +
-                        waypoints.joinToString(";") +
-                        "?overview=full" +
-                        "&geometries=geojson" +
-                        "&steps=true"
-                    )
-
-                connection =
-                    url.openConnection()
-                        as HttpURLConnection
-
-                connection.requestMethod =
-                    "GET"
-
-                connection.connectTimeout =
-                    15000
-
-                connection.readTimeout =
-                    15000
-
-                connection.setRequestProperty(
-                    "User-Agent",
-                    "Turista/1.0"
-                )
-
-                val responseCode =
-                    connection.responseCode
-
-                if (
-                    responseCode !=
-                    HttpURLConnection.HTTP_OK
-                ) {
-
-                    runOnUiThread {
-
-                        if (
-                            offlineMode
-                        ) {
-
-                            Toast.makeText(
-                                this,
-                                "📡 Offline mapa je dostupná, ale offline routovací graf pre túto krajinu zatiaľ nie je nainštalovaný.",
-                                Toast.LENGTH_LONG
-                            ).show()
-
-                        } else {
-
-                            Toast.makeText(
-                                this,
-                                "❌ Trasu sa nepodarilo vypočítať.",
-                                Toast.LENGTH_LONG
-                            ).show()
-
-                            requestOffRoadRoute(
-                                startLatitude,
-                                startLongitude,
-                                endLatitude,
-                                endLongitude
-                            )
-                        }
-                    }
-
-                    return@thread
-                }
-
-                val response =
-                    connection.inputStream
-                        .bufferedReader()
-                        .use {
-                            it.readText()
-                        }
-
-                val json =
-                    JSONObject(
-                        response
-                    )
-
-                val routes =
-                    json.optJSONArray(
-                        "routes"
-                    )
-
-                if (
-                    routes == null ||
-                    routes.length() == 0
-                ) {
-
-                    runOnUiThread {
-
-                        Toast.makeText(
-                            this,
-                            "❌ Cesta sa nenašla.",
-                            Toast.LENGTH_LONG
-                        ).show()
-                    }
-
-                    requestOffRoadRoute(
-                        startLatitude,
-                        startLongitude,
-                        endLatitude,
-                        endLongitude
-                    )
-
-                    return@thread
-                }
-
-                val route =
-                    routes.getJSONObject(
-                        0
-                    )
-
-                currentRouteDistanceMeters =
-                    route.optDouble(
-                        "distance",
-                        0.0
-                    )
-
-                currentRouteDurationSeconds =
-                    route.optDouble(
-                        "duration",
-                        0.0
-                    )
-
-                val geometry =
-                    route.optJSONObject(
-                        "geometry"
-                    )
-
-                val coordinates =
-                    geometry?.optJSONArray(
-                        "coordinates"
-                    )
-
-                val parsedPoints =
-                    parseRouteGeometry(
-                        coordinates
-                    )
-
-                val steps =
-                    parseNavigationSteps(
-                        route.optJSONArray(
-                            "legs"
-                        )
-                    )
-
                 runOnUiThread {
-
-                    routeGeometryPoints.clear()
-
-                    routeGeometryPoints.addAll(
-                        parsedPoints
-                    )
-
-                    navigationSteps.clear()
-
-                    navigationSteps.addAll(
-                        steps
-                    )
-
-                    drawNavigationRoute()
-
+                    if (token != routeRequest || !navigationActive || isDestroyed) return@runOnUiThread
+                    routeLoading = false
+                    if(recalculate) {routeViaPoints.clear();routeViaPoints.addAll(vias);navigationMode=mode;updateViaPointSource()}
+                    viaOffsets=result.viaOffsets;nextVia=0
+                    routeGeometryPoints.clear(); routeGeometryPoints.addAll(result.road)
+                    offRoadGeometryPoints.clear(); offRoadGeometryPoints.addAll(result.tail)
+                    navigationSteps.clear(); navigationSteps.addAll(result.steps.filter { it.type != "arrive" && it.type != "depart" })
+                    currentNavigationStep = 0; announced.clear(); roadEndAnnounced = false
+                    roadLength = RouteProgress(result.road.map { it.navPoint() }).length
+                    offRoadDistanceMeters = RouteProgress(result.tail.map { it.navPoint() }).length
+                    progress = RouteProgress((result.road + result.tail).distinctAdjacent().map { it.navPoint() })
+                    currentRouteDistanceMeters = progress?.length ?: 0.0
+                    currentRouteDurationSeconds = result.duration + offRoadDistanceMeters / 1.2
+                    hybridRouteActive = result.tail.isNotEmpty()
+                    offRoadNavigationActive = manual
+                    roadEndLatitude = result.road.lastOrNull()?.latitude
+                    roadEndLongitude = result.road.lastOrNull()?.longitude
+                    drawNavigationRoute(); drawOffRoadLine()
+                    lastGuidanceTime = 0L
+                    lastLocation?.let { updateNavigationVoice(it) }
                     updateNavigationPanel()
-
-                    speakFirstNavigationInstruction()
-
-                    Toast.makeText(
-                        this,
-                        "🧭 Trasa: ${
-                            formatDistance(
-                                currentRouteDistanceMeters
-                            )
-                        }",
-                        Toast.LENGTH_SHORT
-                    ).show()
+                    if (manual) speak("Vlastná pešia trasa je pripravená. Sleduj bodkovanú čiaru.")
+                    else if (hybridRouteActive && mode == NavigationMode.CAR) Toast.makeText(this,
+                        "Na konci pokračuje peší úsek. Bodkované spojenia mimo chodníkov nemajú overenú priechodnosť.", Toast.LENGTH_LONG).show()
                 }
-
-            } catch (
-                _: Exception
-            ) {
-
+            } catch (e: Exception) {
                 runOnUiThread {
-
-                    if (
-                        offlineMode
-                    ) {
-
-                        Toast.makeText(
-                            this,
-                            "📡 Offline mapa funguje, ale pre túto krajinu zatiaľ chýbajú lokálne routovacie dáta.",
-                            Toast.LENGTH_LONG
-                        ).show()
-
-                    } else {
-
-                        Toast.makeText(
-                            this,
-                            "❌ Chyba pri výpočte trasy.",
-                            Toast.LENGTH_LONG
-                        ).show()
-
-                        requestOffRoadRoute(
-                            startLatitude,
-                            startLongitude,
-                            endLatitude,
-                            endLongitude
-                        )
+                    if (token != routeRequest || isDestroyed) return@runOnUiThread
+                    routeLoading = false
+                    if(recalculate) {
+                        rerouteGate.failed(android.os.SystemClock.elapsedRealtime())
+                        navigationInstruction?.text="Prepočet zlyhal, skúsim znova"
+                        navigationInstructionDistance?.text="Pôvodná trasa zostáva na mape"
+                        speak("Trasu sa zatiaľ nepodarilo prepočítať.")
+                        return@runOnUiThread
                     }
+                    navigationActive = false
+                    navigationInstruction?.text = "Trasu sa nepodarilo vypočítať"
+                    navigationInstructionDistance?.text = "Skús upraviť body alebo režim trasy."
+                    Toast.makeText(this, e.message ?: "Výpočet trasy zlyhal.", Toast.LENGTH_LONG).show()
                 }
-
-            } finally {
-
-                connection?.disconnect()
             }
         }
     }
+
+    private data class RouteData(val road: List<LatLng>, val tail: List<LatLng>, val steps: List<NavigationStep>, val duration: Double, val viaOffsets: List<Double> = emptyList())
+    private fun List<LatLng>.distinctAdjacent(): List<LatLng> = filterIndexed { i, p -> i == 0 || RouteProgress.distance(this[i-1].navPoint(), p.navPoint()) > 0.3 }
+
+    private fun calculateRoad(points: List<LatLng>, mode: NavigationMode, offline: Boolean): RouteData {
+        if (offline) {
+            val result = OfflineRoutingManager.route(applicationContext,
+                points.map { OfflineRoutingManager.RoutePoint(it.latitude,it.longitude) },
+                when(mode) { NavigationMode.CAR -> OfflineRoutingManager.Mode.CAR; NavigationMode.BIKE -> OfflineRoutingManager.Mode.BIKE; else -> OfflineRoutingManager.Mode.WALK })
+            val road = result.points.map { LatLng(it.latitude,it.longitude) }
+            val offsets = RouteProgress(road.map { it.navPoint() }).cumulative
+            val steps = result.turns.mapNotNull { turn ->
+                val point = road.getOrNull(turn.pointIndex) ?: return@mapNotNull null
+                val command = turn.command
+                if (command in listOf("C", "BL", "END", "START")) return@mapNotNull null
+                val modifier = when(command) {
+                    "TL", "TSLL", "TSHL", "KL", "EL" -> "left"
+                    "TR", "TSLR", "TSHR", "KR", "ER" -> "right"
+                    "TU", "TRU", "TLU" -> "uturn"
+                    else -> "straight"
+                }
+                val type = if (command.startsWith("RND") || command.startsWith("RNL")) "roundabout"
+                    else if(command in listOf("KL","KR")) "fork" else "turn"
+                NavigationStep(point.latitude,point.longitude,0.0,0.0,type,modifier,"",offsets[turn.pointIndex],turn.exit)
+            }
+            var previousOffset=0.0
+            val routePath=RouteProgress(road.map {it.navPoint()})
+            val offsetsVia=points.drop(1).dropLast(1).map {point ->
+                routePath.project(point.navPoint(),previousOffset).along.also {previousOffset=it}
+            }
+            return RouteData(road, emptyList(), steps, result.durationSeconds, offsetsVia)
+        }
+        require(points.size <= 100) { "Pre cestnú trasu použi najviac 98 medzibodov. Vlastná pešia trasa podporuje aj kreslenie." }
+        val profile = when(mode) { NavigationMode.CAR -> "car"; NavigationMode.BIKE -> "bike"; else -> "foot" }
+        val coordinates = points.joinToString(";") { "${it.longitude},${it.latitude}" }
+        val connection = URL("https://routing.openstreetmap.de/routed-$profile/route/v1/driving/$coordinates?overview=full&geometries=geojson&steps=true").openConnection() as HttpURLConnection
+        try {
+            connection.connectTimeout = 15000; connection.readTimeout = 20000
+            connection.setRequestProperty("User-Agent", "Turista/1.7")
+            if (connection.responseCode != 200) error("Server trasy nie je dostupný (${connection.responseCode}).")
+            val json = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+            if (json.optString("code") != "Ok") error("Cesta medzi zvolenými bodmi sa nenašla.")
+            val route = json.getJSONArray("routes").getJSONObject(0)
+            val road = parseRouteGeometry(route.getJSONObject("geometry").getJSONArray("coordinates"))
+            require(road.size >= 2) { "Server nevrátil použiteľnú trasu." }
+            val length = RouteProgress(road.map { it.navPoint() }).length
+            val scale = length / route.optDouble("distance", length).coerceAtLeast(1.0)
+            val steps = parseNavigationSteps(route.optJSONArray("legs")).map { it.copy(offset = it.offset*scale) }
+            val legs=route.getJSONArray("legs")
+            var cumulative=0.0
+            val offsetsVia=(0 until legs.length()-1).map {i->cumulative+=legs.getJSONObject(i).optDouble("distance",0.0)*scale;cumulative}
+            return RouteData(road, emptyList(), steps, route.optDouble("duration",0.0), offsetsVia)
+        } finally { connection.disconnect() }
+    }
+
+    private fun emptyGeoJson() = "{\"type\":\"FeatureCollection\",\"features\":[]}"
+    private fun lineJson(points: List<LatLng>): String {
+        if (points.size < 2) return emptyGeoJson()
+        val coordinates = JSONArray()
+        points.forEach { coordinates.put(JSONArray().put(it.longitude).put(it.latitude)) }
+        return JSONObject().put("type","Feature").put("properties",JSONObject())
+            .put("geometry",JSONObject().put("type","LineString").put("coordinates",coordinates)).toString()
+    }
+    private fun drawOffRoadLine() { offRoadSource?.setGeoJson(lineJson(offRoadGeometryPoints)) }
+
+
+    // ====================================
+    // ZABUDOVANÁ OFFLINE TRASA
+    // ====================================
+
+    private fun requestOfflineRoadRoute(startLatitude: Double, startLongitude: Double, endLatitude: Double, endLongitude: Double) {
+        requestRoadRoute(startLatitude,startLongitude,endLatitude,endLongitude)
+    }
+
 
     // ====================================
     // OFF-ROAD TRASA
@@ -2154,7 +2274,6 @@ override fun onRegionNotFound() {
         if (
             coordinates == null
         ) {
-
             return points
         }
 
@@ -2170,7 +2289,6 @@ override fun onRegionNotFound() {
             if (
                 pair.length() < 2
             ) {
-
                 continue
             }
 
@@ -2317,153 +2435,49 @@ override fun onRegionNotFound() {
     // HYBRIDNÁ VZDIALENOSŤ
     // ====================================
 
-    private fun updateHybridDistanceDisplay() {
+    private fun updateHybridDistanceDisplay() { updateNavigationPanel() }
 
-        val roadDistance =
-            currentRouteDistanceMeters
-
-        val total =
-            roadDistance +
-            offRoadDistanceMeters
-
-        navigationRemaining?.text =
-            "Zostáva: ${formatDistance(total)}"
-    }
 
     // ====================================
     // NAVIGAČNÝ PANEL
     // ====================================
 
     private fun updateNavigationPanel() {
-
-        if (
-            !navigationActive
-        ) {
-
+        if (!navigationActive || routeLoading || routeEditMode) return
+        if (arrivalSpoken) {
+            navigationInstruction?.text = "Dorazil si do cieľa"
+            navigationInstructionDistance?.text = ""
+            navigationRemaining?.text = ""
             return
         }
-
-        val remaining =
-            calculateRemainingRouteDistance()
-
-        navigationRemaining?.text =
-            "Zostáva: ${formatDistance(remaining)}"
-
-        if (
-            navigationSteps.isNotEmpty() &&
-            currentNavigationStep <
-            navigationSteps.size
-        ) {
-
-            val step =
-                navigationSteps[
-                    currentNavigationStep
-                ]
-
-            navigationInstruction?.text =
-                createNavigationInstruction(
-                    step
-                )
-
-            navigationInstructionDistance?.text =
-                formatDistance(
-                    step.distance
-                )
-
+        val p = progress ?: return
+        navigationRemaining?.text = "Zostáva: ${formatDistance(calculateRemainingRouteDistance())}"
+        if (lastLocation?.let { !it.hasAccuracy() || it.accuracy > 35 } != false) {
+            navigationInstruction?.text = "Čakám na presnejšiu polohu GPS"
+            navigationInstructionDistance?.text = ""
+        } else if (p.crossTrack > 60) {
+            navigationInstruction?.text = "Si mimo naplánovanej trasy"
+            navigationInstructionDistance?.text = "Uprav trasu alebo sa k nej vráť"
+        } else if (offRoadNavigationActive) {
+            navigationInstruction?.text = if (manualRoute) "Sleduj vlastnú pešiu trasu" else "Pokračuj pešo po bodkovanej trase"
+            navigationInstructionDistance?.text = "Úseky mimo chodníkov: priechodnosť neoverená"
+        } else if (currentNavigationStep < navigationSteps.size) {
+            val step = navigationSteps[currentNavigationStep]
+            navigationInstruction?.text = createNavigationInstruction(step)
+            navigationInstructionDistance?.text = formatDistance((step.offset-p.along).coerceAtLeast(0.0))
         } else {
-
-            navigationInstruction?.text =
-                "Pokračuj k cieľu"
-
-            navigationInstructionDistance?.text =
-                ""
+            navigationInstruction?.text = if (hybridRouteActive && navigationMode == NavigationMode.CAR) "Blížiš sa ku koncu jazdy" else "Pokračuj po trase"
+            navigationInstructionDistance?.text = if (hybridRouteActive && navigationMode == NavigationMode.CAR) "Potom pokračuj pešo" else ""
         }
     }
+
 
     // ====================================
     // ZOSTÁVAJÚCA VZDIALENOSŤ
     // ====================================
 
-    private fun calculateRemainingRouteDistance():
-        Double {
+    private fun calculateRemainingRouteDistance(): Double = progress?.let { (it.length-it.along).coerceAtLeast(0.0) } ?: currentRouteDistanceMeters
 
-        val current =
-            lastLocation
-
-        if (
-            current == null
-        ) {
-
-            return currentRouteDistanceMeters
-        }
-
-        if (
-            routeGeometryPoints.isEmpty()
-        ) {
-
-            return currentRouteDistanceMeters
-        }
-
-        var nearestIndex =
-            0
-
-        var nearestDistance =
-            Double.MAX_VALUE
-
-        for (
-            i in routeGeometryPoints.indices
-        ) {
-
-            val point =
-                routeGeometryPoints[i]
-
-            val distance =
-                distanceBetweenCoordinates(
-                    current.latitude,
-                    current.longitude,
-                    point.latitude,
-                    point.longitude
-                )
-
-            if (
-                distance < nearestDistance
-            ) {
-
-                nearestDistance =
-                    distance
-
-                nearestIndex =
-                    i
-            }
-        }
-
-        var remaining =
-            0.0
-
-        for (
-            i in nearestIndex until
-            routeGeometryPoints.size - 1
-        ) {
-
-            val a =
-                routeGeometryPoints[i]
-
-            val b =
-                routeGeometryPoints[
-                    i + 1
-                ]
-
-            remaining +=
-                distanceBetweenCoordinates(
-                    a.latitude,
-                    a.longitude,
-                    b.latitude,
-                    b.longitude
-                )
-        }
-
-        return remaining
-    }
 
     // ====================================
     // ZOSTÁVAJÚCA OFF-ROAD VZDIALENOSŤ
@@ -2518,7 +2532,6 @@ override fun onRegionNotFound() {
         if (
             coordinates == null
         ) {
-
             return points
         }
 
@@ -2534,7 +2547,6 @@ override fun onRegionNotFound() {
             if (
                 pair.length() < 2
             ) {
-
                 continue
             }
 
@@ -2669,99 +2681,26 @@ override fun onRegionNotFound() {
     // NAVIGAČNÉ KROKY
     // ====================================
 
-    private fun parseNavigationSteps(
-        legs: JSONArray?
-    ): List<NavigationStep> {
-
-        val steps =
-            mutableListOf<NavigationStep>()
-
-        if (
-            legs == null
-        ) {
-
-            return steps
-        }
-
-        for (
-            legIndex in 0 until legs.length()
-        ) {
-
-            val leg =
-                legs.optJSONObject(
-                    legIndex
-                ) ?: continue
-
-            val legSteps =
-                leg.optJSONArray(
-                    "steps"
-                ) ?: continue
-
-            for (
-                i in 0 until legSteps.length()
-            ) {
-
-                val step =
-                    legSteps.optJSONObject(
-                        i
-                    ) ?: continue
-
-                val maneuver =
-                    step.optJSONObject(
-                        "maneuver"
-                    )
-
-                val location =
-                    maneuver?.optJSONArray(
-                        "location"
-                    )
-
-                if (
-                    location == null ||
-                    location.length() < 2
-                ) {
-
-                    continue
-                }
-
-                steps.add(
-                    NavigationStep(
-                        latitude =
-                            location.getDouble(1),
-                        longitude =
-                            location.getDouble(0),
-                        distance =
-                            step.optDouble(
-                                "distance",
-                                0.0
-                            ),
-                        duration =
-                            step.optDouble(
-                                "duration",
-                                0.0
-                            ),
-                        type =
-                            maneuver.optString(
-                                "type",
-                                ""
-                            ),
-                        modifier =
-                            maneuver.optString(
-                                "modifier",
-                                ""
-                            ),
-                        name =
-                            step.optString(
-                                "name",
-                                ""
-                            )
-                    )
-                )
+    private fun parseNavigationSteps(legs: JSONArray?): List<NavigationStep> {
+        val steps = mutableListOf<NavigationStep>()
+        var offset = 0.0
+        if (legs == null) return steps
+        for (l in 0 until legs.length()) {
+            val array = legs.getJSONObject(l).optJSONArray("steps") ?: continue
+            for (i in 0 until array.length()) {
+                val step = array.getJSONObject(i)
+                val maneuver = step.optJSONObject("maneuver")
+                val location = maneuver?.optJSONArray("location")
+                val distance = step.optDouble("distance",0.0)
+                if (location != null && location.length() >= 2) steps.add(NavigationStep(
+                    location.getDouble(1),location.getDouble(0),distance,step.optDouble("duration",0.0),
+                    maneuver.optString("type"),maneuver.optString("modifier"),step.optString("name"),offset,maneuver.optInt("exit",0)))
+                offset += distance
             }
         }
-
         return steps
     }
+
 
     // ====================================
     // OTOČENIE
@@ -2793,7 +2732,6 @@ override fun onRegionNotFound() {
         if (
             navigationSteps.isEmpty()
         ) {
-
             return
         }
 
@@ -2825,59 +2763,22 @@ override fun onRegionNotFound() {
     // VYTVORENIE INŠTRUKCIE
     // ====================================
 
-    private fun createNavigationInstruction(
-        step: NavigationStep
-    ): String {
-
-        val direction =
-            when {
-
-                step.type == "depart" ->
-                    "Vyraz"
-
-                step.type == "arrive" ->
-                    "Dorazíš do cieľa"
-
-                step.modifier.contains(
-                    "left"
-                ) ->
-                    "Odboč doľava"
-
-                step.modifier.contains(
-                    "right"
-                ) ->
-                    "Odboč doprava"
-
-                step.modifier.contains(
-                    "straight"
-                ) ->
-                    "Pokračuj rovno"
-
-                step.type == "roundabout" ||
-                step.type == "rotary" ->
-                    "Na kruhovom objazde"
-
-                step.type == "merge" ->
-                    "Zaraď sa"
-
-                step.type == "fork" ->
-                    "Na rozdvojke"
-
-                else ->
-                    "Pokračuj"
-            }
-
-        return if (
-            step.name.isNotBlank()
-        ) {
-
-            "$direction na ${step.name}"
-
-        } else {
-
-            direction
+    private fun createNavigationInstruction(step: NavigationStep): String {
+        val direction = when {
+            step.type == "roundabout" || step.type == "rotary" -> if (step.exit > 0) "Na kruhovom objazde použi ${step.exit}. výjazd" else "Vojdi na kruhový objazd"
+            step.type == "exit roundabout" || step.type == "exit rotary" -> "Vyjdi z kruhového objazdu"
+            step.modifier == "uturn" -> "Otoč sa, keď je to možné"
+            step.type == "depart" -> "Vyraz po trase"
+            step.type == "arrive" -> "Blížiš sa ku koncu úseku"
+            step.type == "fork" -> if ("left" in step.modifier) "Drž sa vľavo" else if ("right" in step.modifier) "Drž sa vpravo" else "Pokračuj rovno"
+            step.type == "merge" -> "Zaraď sa do premávky"
+            "left" in step.modifier -> "Odboč doľava"
+            "right" in step.modifier -> "Odboč doprava"
+            else -> "Pokračuj rovno"
         }
+        return if (step.name.isBlank() || step.type in listOf("roundabout","rotary")) direction else "$direction na ${step.name}"
     }
+
 
     // ====================================
     // HLÁSENIE ODBOČENIA
@@ -2890,7 +2791,6 @@ override fun onRegionNotFound() {
         if (
             !isTurnInstruction(step)
         ) {
-
             return
         }
 
@@ -2905,124 +2805,84 @@ override fun onRegionNotFound() {
     // AKTUALIZÁCIA HLASU
     // ====================================
 
-    private fun updateNavigationVoice(
-        location: Location
-    ) {
-
-        if (
-            !navigationActive
-        ) {
-
-            return
+    private fun updateNavigationVoice(location: Location) {
+        if (!navigationActive || routeLoading || routeEditMode || arrivalSpoken) return
+        val p = progress ?: return
+        if (!location.hasAccuracy() || location.accuracy > 35) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        val elapsed = if (lastGuidanceTime == 0L) 1.0 else ((now-lastGuidanceTime)/1000.0).coerceIn(1.0,30.0)
+        val car = navigationMode == NavigationMode.CAR && !offRoadNavigationActive
+        val speed = (if(location.hasSpeed()) location.speed.toDouble() else if(car) 8.0 else 1.4).coerceIn(0.0,55.0)
+        p.update(RouteProgress.Point(location.latitude,location.longitude), (speed*elapsed*2+location.accuracy*2+50).coerceAtLeast(100.0))
+        lastGuidanceTime = now
+        if(p.crossTrack<=35) {
+            while(nextVia<viaOffsets.size && p.along>=viaOffsets[nextVia]+10) nextVia++
         }
-
-        if (
-            navigationSteps.isEmpty()
-        ) {
-
-            return
-        }
-
-        if (
-            currentNavigationStep >=
-            navigationSteps.size
-        ) {
-
-            return
-        }
-
-        val step =
-            navigationSteps[
-                currentNavigationStep
-            ]
-
-        val distance =
-            distanceBetweenCoordinates(
-                location.latitude,
-                location.longitude,
-                step.latitude,
-                step.longitude
-            )
-
-        if (
-            distance < 50.0
-        ) {
-
-            speakTurnMilestone(
-                step
-            )
-
-            currentNavigationStep++
-
-            if (
-                currentNavigationStep <
-                navigationSteps.size
-            ) {
-
-                val next =
-                    navigationSteps[
-                        currentNavigationStep
-                    ]
-
-                navigationInstruction?.text =
-                    createNavigationInstruction(
-                        next
-                    )
-
-                navigationInstructionDistance?.text =
-                    formatDistance(
-                        next.distance
-                    )
+        if(rerouteGate.check(now,p.crossTrack,location.accuracy,car,!manualRoute && !routeLoading && !routeEditMode)) {
+            val lat=selectedLatitude;val lon=selectedLongitude
+            if(lat!=null && lon!=null) {
+                speak("Si mimo trasy. Počítam novú cestu k cieľu.")
+                requestRoadRoute(location.latitude,location.longitude,lat,lon,recalculate=true)
+                return
             }
         }
-
-        val finalDistance =
-            distanceToFinalTarget(
-                location
-            )
-
-        if (
-            finalDistance < 25.0 &&
-            !arrivalSpoken
-        ) {
-
-            arrivalSpoken =
-                true
-
-            speak(
-                "Dorazil si do cieľa."
-            )
-
-            navigationInstruction?.text =
-                "🎯 Dorazil si do cieľa"
-
-            navigationInstructionDistance?.text =
-                ""
+        if (p.crossTrack > 60) {
+            if (now-lastSpeechAt > 45000) speak(if(manualRoute) "Si mimo vlastnej trasy. Vráť sa k bodkovanej čiare alebo uprav trasu." else "Si mimo naplánovanej trasy.")
+            return
+        }
+        if (hybridRouteActive && !offRoadNavigationActive && p.along >= roadLength-18 &&
+            roadEndLatitude != null && distanceBetweenCoordinates(location.latitude,location.longitude,roadEndLatitude!!,roadEndLongitude!!) < 35) {
+            offRoadNavigationActive = true
+            if (!roadEndAnnounced) {
+                roadEndAnnounced = true
+                speak(if(navigationMode == NavigationMode.CAR) "Koniec automobilového úseku. Zaparkuj na dovolenom mieste a pokračuj pešo po bodkovanej trase." else "Pokračuj po bodkovanom úseku k cieľu.")
+            }
+        }
+        if (p.length-p.along < 30 && distanceToFinalTarget(location) < 20 && location.accuracy <= 25) {
+            arrivalSpoken = true
+            speak("Dorazil si do cieľa.")
+            updateNavigationPanel()
+            return
+        }
+        if (offRoadNavigationActive) return
+        while (currentNavigationStep < navigationSteps.size && navigationSteps[currentNavigationStep].offset < p.along-12) currentNavigationStep++
+        val step = navigationSteps.getOrNull(currentNavigationStep) ?: return
+        val distance = (step.offset-p.along).coerceAtLeast(0.0)
+        val near = RouteProgress.turnDistance(speed,car)
+        val advance = RouteProgress.advanceDistance(speed,car)
+        val key = "$currentNavigationStep"
+        if (distance <= near && "$key:turn" !in announced) {
+            announced.add("$key:turn"); announced.add("$key:advance")
+            speak(createNavigationInstruction(step))
+        } else if (distance <= advance && "$key:advance" !in announced) {
+            announced.add("$key:advance")
+            val rounded = ((distance/10).toInt()*10).coerceAtLeast(10)
+            speak("O $rounded metrov ${createNavigationInstruction(step).replaceFirstChar {it.lowercase()}}")
         }
     }
+
 
     // ====================================
     // HLAS
     // ====================================
 
-    private fun speak(
-        text: String
-    ) {
-
-        if (
-            !textToSpeechReady
-        ) {
-
-            return
+    private fun speak(text: String) {
+        if (!textToSpeechReady || !settings.voiceGuidance || routeEditMode) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (text == lastSpeech && now-lastSpeechAt < 3000) return
+        val engine=textToSpeech ?: return
+        val preferences=VoicePreferences(this)
+        val online=isInternetAvailable()
+        val configuration="${preferences.name}|${preferences.online}|${preferences.speed}|$online"
+        if(configuration!=lastVoiceConfiguration) {
+            lastVoiceAvailable=GuidanceVoice.apply(engine,preferences,online)
+            lastVoiceConfiguration=configuration
         }
-
-        textToSpeech?.speak(
-            text,
-            TextToSpeech.QUEUE_FLUSH,
-            null,
-            "turista_navigation"
-        )
+        if(!lastVoiceAvailable) return
+        lastSpeech = text; lastSpeechAt = now
+        textToSpeech?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "turista_navigation_$now")
     }
+
 
     // ====================================
     // VZDIALENOSŤ MEDZI SÚRADNICAMI
@@ -3105,108 +2965,8 @@ override fun onRegionNotFound() {
     // VYKRESLENIE TRASY
     // ====================================
 
-    private fun drawNavigationRoute() {
+    private fun drawNavigationRoute() { routeSource?.setGeoJson(lineJson(routeGeometryPoints)) }
 
-        if (
-            routeGeometryPoints.isEmpty()
-        ) {
-
-            return
-        }
-
-        val coordinates =
-            JSONArray()
-
-        for (
-            point in routeGeometryPoints
-        ) {
-
-            val pair =
-                JSONArray()
-
-            pair.put(
-                point.longitude
-            )
-
-            pair.put(
-                point.latitude
-            )
-
-            coordinates.put(
-                pair
-            )
-        }
-
-        val geometry =
-            JSONObject()
-
-        geometry.put(
-            "type",
-            "LineString"
-        )
-
-        geometry.put(
-            "coordinates",
-            coordinates
-        )
-
-        val feature =
-            JSONObject()
-
-        feature.put(
-            "type",
-            "Feature"
-        )
-
-        feature.put(
-            "geometry",
-            geometry
-        )
-
-        val features =
-            JSONArray()
-
-        features.put(
-            feature
-        )
-
-        val collection =
-            JSONObject()
-
-        collection.put(
-            "type",
-            "FeatureCollection"
-        )
-
-        collection.put(
-            "features",
-            features
-        )
-
-        routeSource?.setGeoJson(
-            collection.toString()
-        )
-
-        val boundsPoints =
-            routeGeometryPoints
-
-        if (
-            boundsPoints.isNotEmpty()
-        ) {
-
-            val middle =
-                boundsPoints[
-                    boundsPoints.size / 2
-                ]
-
-            map?.animateCamera(
-                CameraUpdateFactory.newLatLngZoom(
-                    middle,
-                    12.0
-                )
-            )
-        }
-    }
 
     // ====================================
     // VYMAZANIE OFF-ROAD TRASY
@@ -3296,6 +3056,15 @@ override fun onRegionNotFound() {
     // ====================================
 
     private fun clearSelectedTarget() {
+        routeRequest++
+        rerouteGate.reset();nextVia=0;viaOffsets=emptyList()
+        routeLoading = false
+        progress = null
+        manualRoute = false
+        drawingRoute = false
+        findViewById<View>(R.id.routeDrawing).visibility = View.GONE
+        map?.style?.getSourceAs<GeoJsonSource>("route-preview-source")?.setGeoJson(emptyGeoJson())
+        textToSpeech?.stop()
 
         navigationActive =
             false
@@ -3308,6 +3077,7 @@ override fun onRegionNotFound() {
 
         routeEditMode =
             false
+        applyMapSettings()
 
         selectedLatitude =
             null
@@ -3380,15 +3150,15 @@ override fun onRegionNotFound() {
         val canvas =
             Canvas(bitmap)
 
-        val arrowPaint =
+        val paint =
             Paint(
                 Paint.ANTI_ALIAS_FLAG
             )
 
-        arrowPaint.style =
+        paint.style =
             Paint.Style.FILL
 
-        arrowPaint.color =
+        paint.color =
             android.graphics.Color.rgb(
                 25,
                 118,
@@ -3422,7 +3192,7 @@ override fun onRegionNotFound() {
 
         canvas.drawPath(
             path,
-            arrowPaint
+            paint
         )
 
         return bitmap
@@ -3523,14 +3293,12 @@ override fun onRegionNotFound() {
         if (
             !hasLocationPermission()
         ) {
-
             return
         }
 
         if (
             trackingLocation
         ) {
-
             return
         }
 
@@ -3592,6 +3360,15 @@ override fun onRegionNotFound() {
     private fun updateMyLocation(
         location: Location
     ) {
+        val age = (android.os.SystemClock.elapsedRealtimeNanos()-location.elapsedRealtimeNanos)/1_000_000_000.0
+        if (age > 30 || age < -1) return
+        val previous = lastLocation
+        if (previous != null) {
+            val delta = (location.elapsedRealtimeNanos-previous.elapsedRealtimeNanos)/1_000_000_000.0
+            if (delta <= 0) return
+            if (delta < 10 && location.accuracy > previous.accuracy*2 && location.accuracy > 35) return
+        }
+
 
         lastLocation =
             location
@@ -3639,11 +3416,11 @@ override fun onRegionNotFound() {
             navigationActive
         ) {
 
+            if (settings.followNavigation && !navigationFollowPaused && !routeEditMode) {
+                map?.moveCamera(CameraUpdateFactory.newLatLng(LatLng(latitude, longitude)))
+            }
+            updateNavigationVoice(location)
             updateNavigationPanel()
-
-            updateNavigationVoice(
-                location
-            )
         }
 
         if (
@@ -3754,174 +3531,15 @@ override fun onRegionNotFound() {
     // VYHĽADÁVANIE
     // ====================================
 
-    private fun searchPlace(
-        query: String
-    ) {
-
-        Toast.makeText(
-            this,
-            "🔍 Hľadám: $query",
-            Toast.LENGTH_SHORT
-        ).show()
-
-        thread {
-
-            var connection:
-                HttpURLConnection? =
-                null
-
-            try {
-
-                val encodedQuery =
-                    URLEncoder.encode(
-                        query,
-                        "UTF-8"
-                    )
-
-                val url =
-                    URL(
-                        "https://nominatim.openstreetmap.org/search" +
-                        "?q=$encodedQuery" +
-                        "&format=jsonv2" +
-                        "&limit=1" +
-                        "&accept-language=sk"
-                    )
-
-                connection =
-                    url.openConnection()
-                        as HttpURLConnection
-
-                connection.requestMethod =
-                    "GET"
-
-                connection.connectTimeout =
-                    15000
-
-                connection.readTimeout =
-                    15000
-
-                connection.setRequestProperty(
-                    "User-Agent",
-                    "Turista/1.0 (Android hiking application)"
-                )
-
-                connection.setRequestProperty(
-                    "Accept",
-                    "application/json"
-                )
-
-                connection.setRequestProperty(
-                    "Accept-Language",
-                    "sk-SK,sk;q=0.9,en;q=0.8"
-                )
-
-                val responseCode =
-                    connection.responseCode
-
-                if (
-                    responseCode !=
-                    HttpURLConnection.HTTP_OK
-                ) {
-
-                    runOnUiThread {
-
-                        Toast.makeText(
-                            this,
-                            "❌ Vyhľadávanie sa nepodarilo. Internet alebo server.",
-                            Toast.LENGTH_LONG
-                        ).show()
-                    }
-
-                    return@thread
-                }
-
-                val response =
-                    connection.inputStream
-                        .bufferedReader()
-                        .use {
-                            it.readText()
-                        }
-
-                val results =
-                    JSONArray(
-                        response
-                    )
-
-                if (
-                    results.length() == 0
-                ) {
-
-                    runOnUiThread {
-
-                        Toast.makeText(
-                            this,
-                            "❌ Miesto sa nenašlo.",
-                            Toast.LENGTH_LONG
-                        ).show()
-                    }
-
-                    return@thread
-                }
-
-                val result =
-                    results.getJSONObject(
-                        0
-                    )
-
-                val latitude =
-                    result.getDouble(
-                        "lat"
-                    )
-
-                val longitude =
-                    result.getDouble(
-                        "lon"
-                    )
-
-                val displayName =
-                    result.optString(
-                        "display_name",
-                        query
-                    )
-
-                runOnUiThread {
-
-                    moveToSearchResult(
-                        latitude,
-                        longitude,
-                        displayName
-                    )
-                }
-
-            } catch (
-                exception: Exception
-            ) {
-
-                runOnUiThread {
-
-                    Toast.makeText(
-                        this,
-                        "❌ Chyba vyhľadávania: ${exception.message}",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
-
-            } finally {
-
-                connection?.disconnect()
-            }
-        }
-    }
-
-    // ====================================
-    // PRESUN NA VÝSLEDOK VYHĽADÁVANIA
-    // ====================================
+    private fun searchPlace(query: String) { placeSearch?.search() }
 
     private fun moveToSearchResult(
         latitude: Double,
         longitude: Double,
         name: String
     ) {
+        navigationFollowPaused = true
+        firstGpsLocation = false
 
         map?.animateCamera(
             CameraUpdateFactory.newLatLngZoom(
@@ -3956,9 +3574,7 @@ override fun onRegionNotFound() {
             "📍 $name",
             Toast.LENGTH_LONG
         ).show()
-    }
-
-    // ====================================
+    }    // ====================================
     // ŽIVOTNÝ CYKLUS MAPY
     // ====================================
 
@@ -3967,6 +3583,16 @@ override fun onRegionNotFound() {
         super.onStart()
 
         mapView.onStart()
+
+        if (!connectivityCallbackRegistered) {
+            try {
+                connectivityManager.registerDefaultNetworkCallback(networkCallback)
+                connectivityCallbackRegistered = true
+            } catch (_: Exception) {
+            }
+        }
+
+        scheduleConnectivityCheck()
     }
 
     // ====================================
@@ -3978,6 +3604,18 @@ override fun onRegionNotFound() {
         super.onResume()
 
         mapView.onResume()
+        applyUserSettings()
+        trafficRefresh?.let { trafficHandler.removeCallbacks(it) }
+        trafficRefresh = object : Runnable {
+            override fun run() {
+                if (settings.mapType == "traffic" && isInternetAvailable()) {
+                    map?.style?.let { style -> if (style.getLayer("search-marker-layer") != null)
+                        MapBackgrounds.apply(style, "traffic", TrafficKeyStore(this@MapActivity).get(), refresh = true)
+                    }
+                }
+                trafficHandler.postDelayed(this, 120000)
+            }
+        }.also { trafficHandler.postDelayed(it, 120000) }
 
         rotationSensor?.let { sensor ->
 
@@ -4003,12 +3641,29 @@ override fun onRegionNotFound() {
     override fun onPause() {
 
         super.onPause()
-
+        placeSearch?.cancel()
+        trafficRefresh?.let { trafficHandler.removeCallbacks(it) }
+        trafficRefresh = null
+        mapMenu?.dismiss()
+        textToSpeech?.stop()
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         mapView.onPause()
 
         sensorManager.unregisterListener(
             this
         )
+    }
+
+    @Deprecated("Compatibility with the project's AppCompat version")
+    override fun onBackPressed() {
+        val compass = findViewById<View>(R.id.compassOverlay)
+        if (routeEditMode) {
+            cancelRouteEditing()
+        } else if (compass.visibility == View.VISIBLE) {
+            compass.visibility = View.GONE
+        } else {
+            super.onBackPressed()
+        }
     }
 
     // ====================================
@@ -4018,6 +3673,15 @@ override fun onRegionNotFound() {
     override fun onStop() {
 
         super.onStop()
+
+        if (connectivityCallbackRegistered) {
+            try {
+                connectivityManager.unregisterNetworkCallback(networkCallback)
+            } catch (_: Exception) {
+            }
+
+            connectivityCallbackRegistered = false
+        }
 
         mapView.onStop()
     }
@@ -4038,6 +3702,11 @@ override fun onRegionNotFound() {
     // ====================================
 
     override fun onDestroy() {
+        placeSearch?.destroy()
+        savedTrackLoad++
+        routeRequest++
+
+        connectivityHandler.removeCallbacksAndMessages(null)
 
         gpsAnimator?.cancel()
 
@@ -4071,7 +3740,6 @@ override fun onRegionNotFound() {
         if (
             !trackingLocation
         ) {
-
             return
         }
 
@@ -4119,7 +3787,6 @@ override fun onRegionNotFound() {
             event.sensor.type !=
             Sensor.TYPE_ROTATION_VECTOR
         ) {
-
             return
         }
 
@@ -4131,11 +3798,35 @@ override fun onRegionNotFound() {
             event.values
         )
 
+        val adjustedRotationMatrix = FloatArray(9)
+
+        when (windowManager.defaultDisplay.rotation) {
+            Surface.ROTATION_90 -> SensorManager.remapCoordinateSystem(
+                rotationMatrix,
+                SensorManager.AXIS_Y,
+                SensorManager.AXIS_MINUS_X,
+                adjustedRotationMatrix
+            )
+            Surface.ROTATION_180 -> SensorManager.remapCoordinateSystem(
+                rotationMatrix,
+                SensorManager.AXIS_MINUS_X,
+                SensorManager.AXIS_MINUS_Y,
+                adjustedRotationMatrix
+            )
+            Surface.ROTATION_270 -> SensorManager.remapCoordinateSystem(
+                rotationMatrix,
+                SensorManager.AXIS_MINUS_Y,
+                SensorManager.AXIS_X,
+                adjustedRotationMatrix
+            )
+            else -> System.arraycopy(rotationMatrix, 0, adjustedRotationMatrix, 0, 9)
+        }
+
         val orientation =
             FloatArray(3)
 
         SensorManager.getOrientation(
-            rotationMatrix,
+            adjustedRotationMatrix,
             orientation
         )
 
@@ -4152,8 +3843,14 @@ override fun onRegionNotFound() {
                 360f
         }
 
-        currentAzimuth =
-            azimuth
+        if (filteredAzimuth.isNaN()) {
+            filteredAzimuth = azimuth
+        } else {
+            val shortestTurn = ((azimuth - filteredAzimuth + 540f) % 360f) - 180f
+            filteredAzimuth = (filteredAzimuth + shortestTurn * 0.18f + 360f) % 360f
+        }
+
+        currentAzimuth = filteredAzimuth
 
         compassView.setAzimuth(
             currentAzimuth
@@ -4177,337 +3874,7 @@ override fun onRegionNotFound() {
     }
 
     // ====================================
-    // KOMPAS – VIZUÁL
-    // ====================================
-
-    private class CompassView(
-        context: android.content.Context
-    ) : View(context) {
-
-        private val compassPaint =
-            Paint(
-                Paint.ANTI_ALIAS_FLAG
-            )
-
-        private var azimuth =
-            0f
-
-        init {
-
-            compassPaint.strokeWidth =
-                4f
-
-            compassPaint.textAlign =
-                Paint.Align.CENTER
-        }
-
-        // ====================================
-        // NASTAVENIE SMERU
-        // ====================================
-
-        fun setAzimuth(
-            value: Float
-        ) {
-
-            azimuth =
-                value
-
-            invalidate()
-        }
-
-        // ====================================
-        // KRESLENIE KOMPASU
-        // ====================================
-
-        override fun onDraw(
-            canvas: Canvas
-        ) {
-
-            super.onDraw(
-                canvas
-            )
-
-            val width =
-                width.toFloat()
-
-            val height =
-                height.toFloat()
-
-            val centerX =
-                width / 2f
-
-            val centerY =
-                height / 2f
-
-            val radius =
-                minOf(
-                    width,
-                    height
-                ) * 0.32f
-
-            // ====================================
-            // POZADIE
-            // ====================================
-
-            compassPaint.style =
-                Paint.Style.FILL
-
-            compassPaint.color =
-                android.graphics.Color.argb(
-                    190,
-                    0,
-                    0,
-                    0
-                )
-
-            canvas.drawCircle(
-                centerX,
-                centerY,
-                radius + 25f,
-                compassPaint
-            )
-
-            // ====================================
-            // KRUH
-            // ====================================
-
-            compassPaint.style =
-                Paint.Style.STROKE
-
-            compassPaint.strokeWidth =
-                5f
-
-            compassPaint.color =
-                android.graphics.Color.WHITE
-
-            canvas.drawCircle(
-                centerX,
-                centerY,
-                radius,
-                compassPaint
-            )
-
-            // ====================================
-            // OTÁČANIE KOMPASU
-            // ====================================
-
-            canvas.save()
-
-            canvas.rotate(
-                -azimuth,
-                centerX,
-                centerY
-            )
-
-            // ====================================
-            // ZNAČKY
-            // ====================================
-
-            compassPaint.strokeWidth =
-                3f
-
-            for (
-                i in 0 until 360 step 30
-            ) {
-
-                val angle =
-                    Math.toRadians(
-                        i.toDouble()
-                    )
-
-                val outerX =
-                    centerX +
-                    cos(angle).toFloat() *
-                    radius
-
-                val outerY =
-                    centerY +
-                    kotlin.math.sin(
-                        angle
-                    ).toFloat() *
-                    radius
-
-                val innerRadius =
-                    if (
-                        i % 90 == 0
-                    ) {
-
-                        radius - 22f
-
-                    } else {
-
-                        radius - 12f
-                    }
-
-                val innerX =
-                    centerX +
-                    cos(angle).toFloat() *
-                    innerRadius
-
-                val innerY =
-                    centerY +
-                    kotlin.math.sin(
-                        angle
-                    ).toFloat() *
-                    innerRadius
-
-                canvas.drawLine(
-                    outerX,
-                    outerY,
-                    innerX,
-                    innerY,
-                    compassPaint
-                )
-            }
-
-            // ====================================
-            // SLOVENSKÉ SMERY
-            // ====================================
-
-            compassPaint.style =
-                Paint.Style.FILL
-
-            compassPaint.textSize =
-                28f
-
-            compassPaint.typeface =
-                android.graphics.Typeface.DEFAULT_BOLD
-
-            drawDirectionText(
-                canvas,
-                "S",
-                centerX,
-                centerY - radius + 42f
-            )
-
-            drawDirectionText(
-                canvas,
-                "V",
-                centerX + radius - 42f,
-                centerY + 10f
-            )
-
-            drawDirectionText(
-                canvas,
-                "J",
-                centerX,
-                centerY + radius - 12f
-            )
-
-            drawDirectionText(
-                canvas,
-                "Z",
-                centerX - radius + 42f,
-                centerY + 10f
-            )
-
-            // ====================================
-            // STRED
-            // ====================================
-
-            compassPaint.color =
-                android.graphics.Color.WHITE
-
-            canvas.drawCircle(
-                centerX,
-                centerY,
-                8f,
-                compassPaint
-            )
-
-            // ====================================
-            // SEVERNÁ ŠÍPKA
-            // ====================================
-
-            val arrow =
-                Path()
-
-            arrow.moveTo(
-                centerX,
-                centerY - radius + 65f
-            )
-
-            arrow.lineTo(
-                centerX - 12f,
-                centerY - radius + 92f
-            )
-
-            arrow.lineTo(
-                centerX,
-                centerY - radius + 84f
-            )
-
-            arrow.lineTo(
-                centerX + 12f,
-                centerY - radius + 92f
-            )
-
-            arrow.close()
-
-            compassPaint.color =
-                android.graphics.Color.RED
-
-            canvas.drawPath(
-                arrow,
-                compassPaint
-            )
-
-            canvas.restore()
-
-            // ====================================
-            // AKTUÁLNY AZIMUT
-            // ====================================
-
-            compassPaint.color =
-                android.graphics.Color.WHITE
-
-            compassPaint.textSize =
-                22f
-
-            compassPaint.typeface =
-                android.graphics.Typeface.DEFAULT
-
-            val azimuthText =
-                "${azimuth.toInt()}°"
-
-            canvas.drawText(
-                azimuthText,
-                centerX,
-                centerY + radius + 55f,
-                compassPaint
-            )
-        }
-
-        // ====================================
-        // TEXT SMERU
-        // ====================================
-
-        private fun drawDirectionText(
-            canvas: Canvas,
-            text: String,
-            x: Float,
-            y: Float
-        ) {
-
-            compassPaint.color =
-                android.graphics.Color.WHITE
-
-            compassPaint.textSize =
-                28f
-
-            compassPaint.typeface =
-                android.graphics.Typeface.DEFAULT_BOLD
-
-            canvas.drawText(
-                text,
-                x,
-                y,
-                compassPaint
-            )
-        }
-    }
-
-    // ====================================
     // KONIEC MAPACTIVITY
     // ====================================
+
 }

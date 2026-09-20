@@ -33,6 +33,7 @@ class CountryActivity : AppCompatActivity() {
     private lateinit var status: TextView
     private lateinit var downloadButton: Button
     private lateinit var progress: ProgressBar
+    private var routingDownloadStarted = false
 
     private val offlineManager by lazy {
         OfflineManager.getInstance(this)
@@ -51,8 +52,8 @@ class CountryActivity : AppCompatActivity() {
 
         val main = LinearLayout(this)
         main.orientation = LinearLayout.VERTICAL
-        main.setBackgroundColor(Color.rgb(221, 232, 213))
-        main.setPadding(24, 45, 24, 24)
+        main.setBackgroundColor(OfflineUi.cream)
+        main.setPadding(OfflineUi.dp(this,18),OfflineUi.dp(this,8),OfflineUi.dp(this,18),OfflineUi.dp(this,24))
 
         val backButton = TextView(this)
         backButton.text = "←  Späť"
@@ -63,18 +64,22 @@ class CountryActivity : AppCompatActivity() {
         main.addView(backButton)
 
         val title = TextView(this)
-        title.text = "$countryFlag  $countryName"
+        title.text = countryName
         title.textSize = 28f
         title.setTextColor(Color.rgb(38, 50, 56))
-        title.gravity = Gravity.CENTER
+        title.gravity = Gravity.START
+        title.setTypeface(null,android.graphics.Typeface.BOLD)
         title.setPadding(0, 20, 0, 25)
         main.addView(title)
 
         status = TextView(this)
-        status.text = "ℹ️  Stiahne sa mapa celého štátu."
+        status.text =
+            "Stiahne sa mapa aj dáta pre offline navigáciu."
         status.textSize = 17f
         status.setTextColor(Color.rgb(38, 50, 56))
         status.setPadding(10, 10, 10, 20)
+        status.background=OfflineUi.surface(this)
+        status.setPadding(OfflineUi.dp(this,16),OfflineUi.dp(this,16),OfflineUi.dp(this,16),OfflineUi.dp(this,16))
         main.addView(status)
 
         progress = ProgressBar(
@@ -88,33 +93,38 @@ class CountryActivity : AppCompatActivity() {
         main.addView(progress)
 
         downloadButton = Button(this)
-        downloadButton.text = "📥  Stiahnuť celý štát"
+        downloadButton.text = "Stiahnuť mapu + navigáciu"
         downloadButton.setOnClickListener {
             downloadButton.isEnabled = false
             progress.visibility = ProgressBar.VISIBLE
-            status.text = "🔎  Hľadám hranice štátu..."
+            status.text = "Hľadám hranice štátu..."
             findCountryBounds(countryName, countryFlag)
         }
-        main.addView(downloadButton)
+        downloadButton.isAllCaps=false
+        downloadButton.setTextColor(android.content.res.ColorStateList(arrayOf(intArrayOf(android.R.attr.state_enabled),intArrayOf()),intArrayOf(Color.WHITE,Color.LTGRAY)))
+        downloadButton.background=OfflineUi.surface(this,OfflineUi.ink)
+        downloadButton.minHeight=OfflineUi.dp(this,56)
+        main.addView(downloadButton,LinearLayout.LayoutParams(-1,-2).apply{topMargin=OfflineUi.dp(this@CountryActivity,18);bottomMargin=OfflineUi.dp(this@CountryActivity,12)})
 
         val note = TextView(this)
         note.text =
-            "\n📌 Mapa celého štátu sa ukladá v základnom zoome 6–12. " +
-            "Pre podrobnú turistiku budeme používať menšie oblasti s vyšším zoomom."
+            "\nMapa celého štátu sa ukladá v základnom zoome 6–12. " +
+            "Routovacie dáta môžu mať ďalšie stovky MB podľa veľkosti štátu."
         note.textSize = 15f
         note.setTextColor(Color.DKGRAY)
         main.addView(note)
 
         val info = TextView(this)
         info.text =
-            "\nℹ️ Offline mapa obsahuje mapové dlaždice. " +
-            "Samotné offline vedenie po cestách a chodníkoch potrebuje " +
-            "navyše routingové dáta; MapLibre offline dlaždice ich neposkytujú."
+            "\nPo dokončení bude Turista počítať trasu po cestách " +
+            "a chodníkoch priamo v telefóne, bez ďalšej aplikácie."
         info.textSize = 16f
         info.setTextColor(Color.DKGRAY)
         main.addView(info)
 
-        setContentView(main)
+        val scroll=android.widget.ScrollView(this).apply{setBackgroundColor(OfflineUi.cream);isFillViewport=true;addView(main)}
+        setContentView(scroll)
+        ScreenInsets.applyTo(scroll)
     }
 
     private fun findCountryBounds(
@@ -222,6 +232,19 @@ class CountryActivity : AppCompatActivity() {
         east: Double,
         north: Double
     ) {
+        val countrySpan = maxOf(
+            kotlin.math.abs(east - west),
+            kotlin.math.abs(north - south)
+        )
+
+        val maximumZoom = when {
+            countrySpan <= 2.0 -> 14.0
+            countrySpan <= 8.0 -> 12.0
+            countrySpan <= 20.0 -> 10.0
+            countrySpan <= 50.0 -> 8.0
+            else -> 7.0
+        }
+
         val bounds =
             LatLngBounds.Builder()
                 .include(LatLng(south, west))
@@ -247,7 +270,7 @@ class CountryActivity : AppCompatActivity() {
                 put("east", east)
                 put("north", north)
                 put("minZoom", 6.0)
-                put("maxZoom", 12.0)
+                put("maxZoom", maximumZoom)
             }
                 .toString()
                 .toByteArray(Charsets.UTF_8)
@@ -260,7 +283,7 @@ class CountryActivity : AppCompatActivity() {
                 STYLE_URL,
                 bounds,
                 6.0,
-                12.0,
+                maximumZoom,
                 resources.displayMetrics.density
             )
 
@@ -308,7 +331,7 @@ class CountryActivity : AppCompatActivity() {
                                         percent
 
                                     status.text =
-                                        "📥  $countryName\n" +
+                                        "$countryName\n" +
                                         "$percent %  •  " +
                                         "$done / $total zdrojov"
                                 }
@@ -326,13 +349,22 @@ class CountryActivity : AppCompatActivity() {
                                             100
 
                                         status.text =
-                                            "✅  $countryName je uložené offline."
+                                            " Mapa je uložená.\n" +
+                                            "Pripravujem offline navigáciu..."
 
                                         downloadButton.text =
-                                            "✅  Mapa uložená"
+                                            "⏳  Sťahujem navigáciu"
 
                                         downloadButton.isEnabled =
                                             false
+
+                                        downloadRoutingData(
+                                            countryName,
+                                            west,
+                                            south,
+                                            east,
+                                            north
+                                        )
                                     }
                                 }
                             }
@@ -395,5 +427,94 @@ class CountryActivity : AppCompatActivity() {
                 }
             }
         )
+    }
+
+    private fun downloadRoutingData(
+        countryName: String,
+        west: Double,
+        south: Double,
+        east: Double,
+        north: Double
+    ) {
+        if (routingDownloadStarted) {
+            return
+        }
+
+        routingDownloadStarted = true
+        progress.progress = 0
+
+        val fileCount =
+            OfflineRoutingManager.requiredSegments(
+                west,
+                south,
+                east,
+                north
+            ).size
+
+        status.text =
+            " $countryName: sťahujem $fileCount " +
+            "routovacie súbory..."
+
+        thread {
+            try {
+                var lastPercent = -1
+
+                OfflineRoutingManager.downloadForBounds(
+                    applicationContext,
+                    west,
+                    south,
+                    east,
+                    north
+                ) { routingProgress ->
+                    val percent = routingProgress.percent
+
+                    if (percent != lastPercent) {
+                        lastPercent = percent
+
+                        runOnUiThread {
+                            progress.progress = percent
+                            status.text =
+                                " Offline navigácia: $percent %\n" +
+                                routingProgress.fileName +
+                                "  (${routingProgress.fileIndex + 1}/" +
+                                "${routingProgress.fileCount})"
+                        }
+                    }
+                }
+
+                runOnUiThread {
+                    progress.progress = 100
+                    status.text =
+                        " $countryName je kompletne offline.\n" +
+                        "Mapa aj navigácia sú pripravené."
+                    downloadButton.text =
+                        " Mapa + navigácia uložené"
+                    downloadButton.isEnabled = false
+                }
+            } catch (exception: Exception) {
+                runOnUiThread {
+                    routingDownloadStarted = false
+                    progress.visibility = ProgressBar.GONE
+                    downloadButton.isEnabled = true
+                    downloadButton.text =
+                        " Skúsiť navigáciu znova"
+                    downloadButton.setOnClickListener {
+                        downloadButton.isEnabled = false
+                        progress.visibility = ProgressBar.VISIBLE
+                        downloadRoutingData(
+                            countryName,
+                            west,
+                            south,
+                            east,
+                            north
+                        )
+                    }
+                    status.text =
+                        "Mapa je uložená, ale routovacie dáta " +
+                        "sa nestiahli.\n" +
+                        (exception.message ?: "Neznáma chyba")
+                }
+            }
+        }
     }
 }

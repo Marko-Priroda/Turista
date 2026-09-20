@@ -1,0 +1,41 @@
+PRIHLÁSENIE A REGISTRÁCIA – TURISTA 1.13
+
+Tento projekt obsahuje obrazovky aj komunikáciu so Supabase Auth.
+Neobsahuje vytvorený serverový projekt ani prihlasovacie údaje vlastníka.
+Bez nastavenia služby sa registrácia nemôže vykonať. Účet je voliteľný.
+
+NASTAVENIE VLASTNÍKOM
+1. Vytvor vlastný projekt na https://supabase.com/dashboard.
+2. V Authentication povoľ Email / Password a potvrdenie e-mailu.
+3. V nastavení projektu nájdi Project URL a verejný publishable key
+   (alebo starší anon public key). NEPOUŽÍVAJ secret ani service_role key.
+4. V Turistovi otvor menu -> Prihlásiť sa / účet -> Nastavenie služby · vlastník.
+   Vlož skutočnú HTTPS adresu projektu a jeho verejný kľúč. Ulož.
+5. V Supabase Authentication -> Email Templates uprav Confirm signup
+   a Reset password tak, aby obsahovali číselný kód {{ .Token }}.
+   Napríklad: <p>Tvoj kód pre Turistu: {{ .Token }}</p>
+   V aplikácii je overovanie cez kód, nie cez presmerovanie odkazu.
+6. Pre skutočných používateľov nastav vlastné SMTP a odosielateľa.
+   Predvolená testovacia e-mailová služba má výrazné obmedzenia doručovania.
+7. Vyskúšaj registráciu na vlastnej adrese -> potvrdenie e-mailu kódom ->
+   odhlásenie -> prihlásenie -> Zabudnuté heslo -> Mám obnovovací kód.
+   Skontroluj chybný kód a nesprávne heslo.
+
+Ak chceš tú istú službu zabudovať pre všetkých, verejné URL a public key
+sa môžu vyplniť v AccountConfig v súbore AccountActivity.kt pred zostavením.
+Tieto verejné údaje nenahrádzajú zabezpečenie databázy. Táto verzia ukladá
+iba účet do Supabase Auth; žiadne tabuľky s nálezmi na server neposiela.
+
+POUŽÍVANIE
+Registrácia: e-mail, používateľské meno, heslo, heslo znova.
+Používateľské meno je zobrazované meno, nie unikátny prihlasovací identifikátor.
+Prihlasuje sa e-mailom. Pri potvrdení alebo obnove najprv vyplň e-mail,
+potom vlož kód z doručenej správy. Relácia sa ukladá šifrovane cez Android
+Keystore. Heslo sa do nastavení neukladá.
+
+Prihlásenie nevytvára ani nezískava API kľúče Pl@ntNet/Gemini.
+Mapy, kroky, uložené miesta, trasy a nálezy zostávajú v tomto telefóne.
+Odhlásenie ich nevymaže; na spoločnom telefóne sa automaticky neoddeľujú
+podľa účtov. Cloudová synchronizácia nie je súčasťou tejto verzie.
+
+Dokumentácia: https://supabase.com/docs/guides/auth/passwords
